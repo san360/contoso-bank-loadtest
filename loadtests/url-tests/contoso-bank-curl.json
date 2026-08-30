@@ -6,31 +6,31 @@
         {
           "requestName": "Health",
           "requestType": "CURL",
-          "curlCommand": "curl --request GET 'https://app-loadtest-bxbs6q.azurewebsites.net/health'",
+          "curlCommand": "curl --request GET 'https://app-loadtest-27d2e5.azurewebsites.net/health'",
           "responseVariables": []
         },
         {
           "requestName": "GetBalance",
           "requestType": "CURL",
-          "curlCommand": "curl --request GET 'https://app-loadtest-bxbs6q.azurewebsites.net/api/accounts/ACC-1001/balance'",
+          "curlCommand": "curl --request GET 'https://app-loadtest-27d2e5.azurewebsites.net/api/accounts/ACC-1001/balance'",
           "responseVariables": []
         },
         {
           "requestName": "GetTransactions",
           "requestType": "CURL",
-          "curlCommand": "curl --request GET 'https://app-loadtest-bxbs6q.azurewebsites.net/api/accounts/ACC-1001/transactions?page_size=20'",
+          "curlCommand": "curl --request GET 'https://app-loadtest-27d2e5.azurewebsites.net/api/accounts/ACC-1001/transactions?page_size=20'",
           "responseVariables": []
         },
         {
           "requestName": "CreateTransfer",
           "requestType": "CURL",
-          "curlCommand": "curl --request POST 'https://app-loadtest-bxbs6q.azurewebsites.net/api/transfers' --header 'Content-Type: application/json' --data '{\"from_account\":\"ACC-1001\",\"to_account\":\"ACC-2002\",\"amount_minor\":4250,\"currency\":\"GBP\",\"reference\":\"CURL-TEST\"}'",
+          "curlCommand": "curl --request POST 'https://app-loadtest-27d2e5.azurewebsites.net/api/transfers' --header 'Content-Type: application/json' --data '{\"from_account\":\"ACC-1001\",\"to_account\":\"ACC-2002\",\"amount_minor\":4250,\"currency\":\"GBP\",\"reference\":\"CURL-TEST\"}'",
           "responseVariables": []
         },
         {
           "requestName": "GenerateStatement",
           "requestType": "CURL",
-          "curlCommand": "curl --request GET 'https://app-loadtest-bxbs6q.azurewebsites.net/api/statements/ACC-1001?months=3'",
+          "curlCommand": "curl --request GET 'https://app-loadtest-27d2e5.azurewebsites.net/api/statements/ACC-1001?months=3'",
           "responseVariables": []
         }
       ],

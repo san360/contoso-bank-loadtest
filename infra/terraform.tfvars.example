@@ -1,28 +1,35 @@
-# Copy to terraform.tfvars and edit. Do not commit terraform.tfvars.
+# Copy to terraform.tfvars and edit only for standalone Terraform runs.
+# azd supplies environment_name, location and principal_id automatically.
 
-name_prefix = "contosobank"
-location    = "uksouth"
+environment_name = "loadtest"
+location         = "swedencentral"
 
-# Set false where the platform team pre-creates resource groups (common in
-# higher environments).
-create_resource_group = true
+# Optional for direct Terraform with azurerm v4 if your Azure CLI context does
+# not expose a default subscription/tenant. azd users can also set these as
+# environment variables: ARM_SUBSCRIPTION_ID and ARM_TENANT_ID.
+# subscription_id = "1da52b57-468a-4dc6-ba36-1255cc1f6e8e"
+# tenant_id       = "16b3c013-d300-468d-ac64-7eda0820b6d3"
+
+# Optional override. Defaults to rg-<environment_name>, matching the former Bicep stack.
+# resource_group_name = "rg-loadtest"
+
+# Keep S1 / one worker for the teaching flow; scale deliberately during the autoscale chapter.
+app_service_plan_sku = "S1"
+worker_count         = 1
 
 # Entra ID GROUP object IDs, not user IDs. Least privilege and auditable.
 load_test_contributor_principal_ids = [
   # "00000000-0000-0000-0000-000000000000",
 ]
 
-# If the system under test lives in a different resource group, point this at
-# that resource group's ID so App Components can read its metrics.
-# monitoring_reader_scope_id = "/subscriptions/.../resourceGroups/rg-contoso-bank-app"
+# Fake demo secret only. Pass a protected value from CI if a private customer demo requires it.
+# demo_api_key_value = "contoso-demo-api-key"
 
-# Reuse the central workspace instead of creating one.
-# log_analytics_workspace_id = "/subscriptions/.../workspaces/log-central"
+# Intended value. Some customer policies silently rewrite Key Vault public access to disabled;
+# main.tf documents why Terraform ignores that drift.
+key_vault_public_network_access_enabled = true
 
 tags = {
-  workload           = "load-testing"
-  environment        = "demo"
-  dataClassification = "non-production"
-  managedBy          = "terraform"
-  costCentre         = "CHANGE-ME"
+  workload   = "contoso-bank-loadtest-demo"
+  costCentre = "demo"
 }

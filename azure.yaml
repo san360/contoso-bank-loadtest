@@ -3,19 +3,21 @@
 # =============================================================================
 # Contoso Bank - Azure Load Testing demo
 # =============================================================================
-# One command to stand the whole thing up:
+# One command to stand the whole thing up after the Terraform state bootstrap:
 #
-#   azd auth login
+#   azd config set auth.useAzCliAuth true
+#   az login --tenant <tenant-id>
 #   azd up
 #
-# That provisions Log Analytics, Application Insights, an App Service plan, the
-# Python API under test, the Azure Load Testing resource, and the Monitoring
-# Reader role assignment - then deploys the app and creates the load test
-# definitions from loadtests/config/*.yaml.
+# Terraform is the only IaC provider in this kit. It provisions Log Analytics,
+# Application Insights, an App Service plan, the Python API under test, the Azure
+# Load Testing resource, Key Vault, diagnostic settings and the Monitoring Reader
+# role assignment - then azd deploys the app and the postdeploy hook creates the
+# load test definitions from loadtests/config/*.yaml.
 #
 # No Docker and no local Python toolchain required: App Service builds the app
-# remotely with Oryx (SCM_DO_BUILD_DURING_DEPLOYMENT=true in host.bicep), and
-# the post-deploy hook has a PowerShell / POSIX fallback if Python is absent.
+# remotely with Oryx (SCM_DO_BUILD_DURING_DEPLOYMENT=true in Terraform), and the
+# post-deploy hook has a PowerShell / POSIX fallback if Python is absent.
 # =============================================================================
 
 name: contoso-bank-loadtest
@@ -23,9 +25,8 @@ metadata:
   template: contoso-bank-loadtest@1.0.0
 
 infra:
-  provider: bicep
+  provider: terraform
   path: infra
-  module: main
 
 services:
   api:

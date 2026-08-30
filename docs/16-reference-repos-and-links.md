@@ -29,7 +29,7 @@
 
 | Resource | Notes |
 |---|---|
-| [AVM Bicep — `avm/res/load-test-service/load-test`](https://github.com/Azure/bicep-registry-modules/tree/main/avm/res/load-test-service/load-test) | **Recommended.** Azure Verified Module with managed identity, RBAC, diagnostics, CMK, tags, locks. Reference as `br/public:avm/res/load-test-service/load-test:<version>` |
+| [AVM Bicep — `avm/res/load-test-service/load-test`](https://github.com/Azure/bicep-registry-modules/tree/main/avm/res/load-test-service/load-test) | External option for Bicep-standardised platform teams. **Not used by this repo**, which is Terraform-only after the migration. Reference as `br/public:avm/res/load-test-service/load-test:<version>` and pin the version. |
 | [AVM Terraform — `terraform-azurerm-avm-res-loadtestservice-loadtest`](https://github.com/Azure/terraform-azurerm-avm-res-loadtestservice-loadtest) | ⚠️ **Pre-1.0.0** at time of research. Usable, but flag the pre-release status to Terraform-first customers |
 | [ARM template reference](https://learn.microsoft.com/en-us/azure/templates/microsoft.loadtestservice/loadtests) | Resource type `Microsoft.LoadTestService/loadTests` — check current API version |
 | ⚠️ Azure Quickstart Templates | A load-testing-specific quickstart path could not be confirmed. Search [Azure template gallery](https://azure.microsoft.com/resources/templates/?term=load+testing) if needed |
@@ -77,6 +77,7 @@ Only relevant if you choose not to use the purpose-built Contoso Bank app in thi
 - [Quickstart: URL-based test](https://learn.microsoft.com/en-us/azure/app-testing/load-testing/quickstart-create-and-run-load-test)
 - [JMeter-based test](https://learn.microsoft.com/en-us/azure/app-testing/load-testing/how-to-create-and-run-load-test-with-jmeter-script)
 - [Locust-based test](https://learn.microsoft.com/en-us/azure/app-testing/load-testing/quickstart-create-run-load-test-with-locust)
+- [Create and run a load test from a recording](https://learn.microsoft.com/en-us/azure/app-testing/load-testing/quickstart-create-run-load-tests-from-recording)
 - [Parameterize load tests](https://learn.microsoft.com/en-us/azure/app-testing/load-testing/how-to-parameterize-load-tests)
 - [YAML config reference](https://learn.microsoft.com/en-us/azure/app-testing/load-testing/reference-test-config-yaml)
 
@@ -137,7 +138,7 @@ These could not be fully confirmed during research. **Check each one during rehe
 | **Compliance certifications for this specific service** | FSI gating question | [Service Trust Portal](https://servicetrust.microsoft.com/) |
 | **SLA** | Contractual question | [Microsoft SLA for Online Services](https://www.microsoft.com/licensing/docs/view/Service-Level-Agreements-SLA-for-Online-Services) |
 | **Private endpoint on the load testing resource itself** (vs. on the tested app) | Security architecture question | Current networking docs |
-| **Current ARM API version** for `Microsoft.LoadTestService/loadTests` | Bicep appendix walkthrough | [Template reference](https://learn.microsoft.com/en-us/azure/templates/microsoft.loadtestservice/loadtests) |
+| **Current ARM API version** for `Microsoft.LoadTestService/loadTests` | IaC/API walkthrough | [Template reference](https://learn.microsoft.com/en-us/azure/templates/microsoft.loadtestservice/loadtests) |
 
 ### Confirmed during research — safe to assert
 

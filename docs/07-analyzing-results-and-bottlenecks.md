@@ -134,29 +134,87 @@ Request-level pass/fail criteria let you encode this: a strict threshold on `POS
 
 This is where you explicitly call back to doc 02.
 
-### Configure App Components
-Add every Azure resource in the request path. Azure Load Testing auto-selects the most relevant metrics per resource type, and you can add more. Up to 100 App Components per test.
+### 7.5.1 Client-side vs server-side metrics
 
-Commonly relevant resource types for a financial workload:
+| Metric family | Measured by | Answers | Examples |
+|---|---|---|---|
+| **Client-side metrics** | Azure Load Testing engines | *What did the user see?* | response time, latency, requests/sec, error percentage |
+| **Server-side metrics** | Azure Monitor for the resources in **App Components** | *What was the system under test doing?* | App Service CPU, memory, HTTP queue length, server request duration |
 
-| Resource | Metrics that reveal bottlenecks |
+The distinction matters. A 20-second `CreateTransfer` p95 tells you the customer is waiting. It does **not** tell you whether the app is CPU-bound, memory-bound, queueing at the front door, or blocked behind an in-process lock. App Components add that second half of the picture.
+
+### 7.5.2 How App Components are configured
+
+App Components are the Azure resources Azure Load Testing watches during a run. The service reads their Azure Monitor metrics and renders them next to the load-generator charts. Microsoft documents two ways to configure them:
+
+| Method | What it is good for | Important detail |
+|---|---|---|
+| **YAML `appComponents`** | Static, environment-specific test files | The current `v0.1` schema supports `appComponents`, and each component can include a `metrics` list with `name`, `namespace`, and `aggregation`. |
+| **`az load test app-component add` + `az load test server-metric add`** | Repeatable automation where resource IDs are discovered after deployment | This demo uses the CLI in `tools/provision_loadtests.*`, because the App Service, App Insights and App Service Plan IDs come from `azd` outputs and must not be hardcoded into YAML. |
+
+`failureCriteria.serverMetrics` is a related YAML feature, but it is a **gate** ("fail the run if CPU > 80%"), not the same thing as choosing which charts to collect. For this demo we keep the gates client-side and use server metrics for diagnosis.
+
+> ⚠️ **The step everyone forgets:** the load testing resource's managed identity needs permission to read metrics from those resources, typically **Monitoring Reader** at the resource group or resource scope. If it is missing, the run can complete and the server-side charts are simply empty. In this environment it is already assigned at the resource group — verify it live and make that a teaching point rather than re-granting it.
+
+### 7.5.3 Metrics available in this deployed app
+
+Verified with `az monitor metrics list-definitions` against the live Linux App Service, App Service Plan and Application Insights component.
+
+| Resource type | Available metric names |
 |---|---|
-| **App Service / Plan** | CPU %, memory %, HTTP queue length, thread count, instance count |
-| **Azure Container Apps** | Replica count, CPU/memory, request count — great for showing autoscale |
-| **AKS** | Node/pod CPU & memory, pod restarts, pending pods |
-| **Azure SQL Database / MI / Elastic Pool** | DTU/vCore %, deadlocks, blocked sessions, log IO, sessions used |
-| **Cosmos DB** | Provisioned vs consumed RU/s, **429 throttled requests**, server-side latency |
-| **API Management** | Capacity %, backend duration, failed requests |
-| **Service Bus / Event Hubs** | Active messages, incoming/outgoing rate, throttled requests, dead-letter count |
-| **Azure Functions** | Function execution units, instance count, cold starts |
-| **Application Gateway / Front Door** | Backend response time, unhealthy host count, backend connection errors |
-| **Storage / Key Vault** | Throttling, latency, availability |
+| `Microsoft.Web/sites` | `CpuTime`, `Requests`, `BytesReceived`, `BytesSent`, `Http101`, `Http2xx`, `Http3xx`, `Http401`, `Http403`, `Http404`, `Http406`, `Http4xx`, `Http5xx`, `MemoryWorkingSet`, `AverageMemoryWorkingSet`, `AverageResponseTime` (deprecated), `HttpResponseTime`, `InstanceCount`, `IoReadBytesPerSecond`, `IoWriteBytesPerSecond`, `IoReadOperationsPerSecond`, `IoWriteOperationsPerSecond`, `HealthCheckStatus`, `FileSystemUsage` |
+| `Microsoft.Web/serverfarms` | `CpuPercentage`, `MemoryPercentage`, `DiskQueueLength`, `HttpQueueLength`, `BytesReceived`, `BytesSent`, `TcpSynSent`, `TcpSynReceived`, `TcpEstablished`, `TcpFinWait1`, `TcpFinWait2`, `TcpClosing`, `TcpCloseWait`, `TcpLastAck`, `TcpTimeWait`, `SocketInboundAll`, `SocketOutboundAll`, `SocketOutboundEstablished`, `SocketOutboundTimeWait`, `SocketLoopback` |
+| `microsoft.insights/components` | `availabilityResults/availabilityPercentage`, `availabilityResults/count`, `availabilityResults/duration`, browser timing metrics, `dependencies/count`, `dependencies/duration`, `dependencies/failed`, `pageViews/count`, `pageViews/duration`, `performanceCounters/requestExecutionTime`, `performanceCounters/requestsInQueue`, `performanceCounters/requestsPerSecond`, `performanceCounters/exceptionsPerSecond`, `performanceCounters/processIOBytesPerSecond`, `performanceCounters/processCpuPercentage`, `performanceCounters/processorCpuPercentage`, `performanceCounters/memoryAvailableBytes`, `performanceCounters/processPrivateBytes`, `requests/duration`, `requests/count`, `requests/failed`, `requests/rate`, `exceptions/count`, `exceptions/browser`, `exceptions/server`, `traces/count` |
 
-> ⚠️ **The step everyone forgets:** the load testing resource's managed identity needs permission to read metrics from those resources (e.g. **Monitoring Reader**). Without it the server-side panel is silently empty. The demo IaC in [`../infra`](../infra) does this for you — call it out.
+### 7.5.4 The metrics this demo enables — and why
+
+The recent run was not an error story: `CreateTransfer` averaged **14.1s** with **zero errors**. That is the signature of queueing or lock contention, not a crash. Enable a focused set that proves or disproves saturation:
+
+| Component | Metric | Aggregation | Question it answers | Healthy vs unhealthy shape |
+|---|---|---:|---|---|
+| App Service Plan | `CpuPercentage` | Average | Is the worker plan CPU-saturated? | Healthy/lock contention: low or moderate while p95 rises. CPU bottleneck: pinned high with latency rising. |
+| App Service Plan | `MemoryPercentage` | Average | Are we paging or memory-bound? | Healthy: stable. Memory issue: climbs toward the limit during the run. |
+| App Service Plan | `HttpQueueLength` | Maximum | Are requests backing up before the app workers accept them? | Healthy/inside-app lock: near zero. Front-door/worker saturation: sustained queue. |
+| App Service | `HttpResponseTime` | Average | Does Azure see the app taking longer, not just the load engines? | Rises with client p95 when the backend is genuinely slow. |
+| App Service | `Requests` | Total | Did throughput plateau while VUs kept increasing? | Lock/pool ceiling: flat request count rate despite more users. |
+| App Service | `Http5xx` | Total | Is slowness turning into server failures? | The observed run had zero errors; a spike changes the diagnosis. |
+| App Service | `MemoryWorkingSet` | Average | Is the process footprint growing? | Stable for this demo; rising trend hints at leak or caching side effect. |
+| App Service | `InstanceCount` | Average | Did scale-out happen during the test? | Useful when explaining why a single in-process lock does not disappear just because the plan scales. |
+| Application Insights | `requests/duration` | Average | What duration did the instrumented app report? | Should move with client latency if the wait is inside the app. |
+| Application Insights | `requests/count` | Count | How many server requests did the app process? | Confirms request volume from the server's perspective. |
+| Application Insights | `requests/failed` | Count | Did the app report failed requests? | Should stay at zero in the lock-contention story. |
+| Application Insights | `requests/rate` | Average | What request rate did the app actually process? | Plateaus when the serialized transfer path caps throughput. |
+| Application Insights | `performanceCounters/requestsInQueue` | Maximum | Is there an application queue visible to App Insights? | If populated and high, investigate worker queueing. If empty/low while p95 rises, the queue is likely inside application code. |
+| Application Insights | `performanceCounters/processCpuPercentage` | Average | Is the Python process itself CPU-bound? | Should stay lower for transfer lock contention; rises for statement CPU work. |
+| Application Insights | `performanceCounters/processPrivateBytes` | Average | Is process memory pressure part of the problem? | Should be stable for this demo. |
+
+We deliberately do **not** enable every available metric. Data-in/out, TCP socket states, filesystem usage and IO rates are useful for other incidents, but they distract from this customer's bottleneck story.
+
+### 7.5.5 Reading the shapes together
+
+| Pattern | What the charts say | Diagnosis |
+|---|---|---|
+| **CPU saturation** | Client p95 rises, `HttpResponseTime` rises, plan/process CPU high, request rate plateaus or errors start | The server is out of compute. Statement generation is the demo endpoint most likely to show this. |
+| **Front-door / worker queueing** | Client p95 rises, `HttpQueueLength` or `requestsInQueue` rises, CPU may be high or low | Requests are waiting before useful work starts. Scale out or fix worker/thread limits. |
+| **In-process lock contention** | `CreateTransfer` p95 explodes, errors stay near zero, CPU and memory stay modest, HTTP queue length may stay low, request rate plateaus | The app is idle-ish but serialized behind `TRANSFER_LOCK`. Azure metrics prove it is **not** a simple "add CPU" problem. |
+| **Connection pool queueing / N+1** | Read endpoints slow, CPU modest, request duration rises with request volume; no real SQL dependency metric appears because the demo database is in-memory | Use App Insights traces or app counters next. The platform metrics show queueing, not the exact semaphore. |
+
+Be honest: an `asyncio.Lock` or `asyncio.Semaphore` inside one Python worker is not a first-class Azure Monitor resource. Server-side metrics can rule out CPU, memory and platform queue saturation, but they cannot name the exact lock. That final step belongs in Application Insights traces, code review, or custom application metrics.
+
+### 7.5.6 Which tests get these metrics
+
+| Test | Server metrics? | Why |
+|---|---:|---|
+| `contoso-bank-peak-load` | ✅ | Flagship four-engine JMeter test; this is the main bottleneck diagnosis demo. |
+| `contoso-bank-peak-load-locust` | ✅ | Same business journey and load profile in Python; proves the server view is script-agnostic. |
+| `contoso-bank-pr-gate` | ✅ | Lower scale, but useful in CI when a regression needs a quick saturation-vs-queueing hint. |
+| URL basic / URL smoke / URL cURL / false-green / Key Vault secrets tests | ❌ | One-engine teaching tests. They are about authoring modes, false-green behaviour and RBAC/secrets, not backend diagnosis. Keeping them lean reduces noise. |
+
+The post-deploy hook attaches these App Components and metrics after every `azd up`, so repeated provisioning keeps the definitions intact without hardcoding environment-specific resource IDs.
 
 ### The correlation moment
 Put the two charts on screen together and narrate:
-> *"Response time p95 starts climbing at 14:03. App Service CPU hits 100% at 14:03. Cosmos DB throttled requests start at 14:03. That's not a coincidence, and finding it took ten seconds instead of ten people on a bridge call."*
+> *"Response time p95 starts climbing at 14:03. App Service CPU is not saturated, memory is stable and the HTTP queue is flat. That means the server is not 'too small' — the request path is serialising inside the app. Now we know where to look."*
 
 ---
 
@@ -306,6 +364,7 @@ Doc [`08-cicd-integration.md`](08-cicd-integration.md) implements exactly this.
 
 - [Tutorial: identify performance bottlenecks](https://learn.microsoft.com/en-us/azure/app-testing/load-testing/tutorial-identify-bottlenecks-azure-portal)
 - [Monitor server-side application metrics](https://learn.microsoft.com/en-us/azure/app-testing/load-testing/how-to-monitor-server-side-metrics)
+- [Configure a load test in YAML](https://learn.microsoft.com/en-us/azure/app-testing/load-testing/reference-test-config-yaml)
 - [Supported Azure resource types](https://learn.microsoft.com/en-us/azure/app-testing/load-testing/resource-supported-azure-resource-types)
 - [Analyze results using actionable insights](https://learn.microsoft.com/en-us/azure/app-testing/load-testing/how-to-analyze-test-results-using-actionable-insights)
 - [Compare multiple test runs](https://learn.microsoft.com/en-us/azure/app-testing/load-testing/how-to-compare-multiple-test-runs)

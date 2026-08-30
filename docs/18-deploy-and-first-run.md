@@ -10,7 +10,7 @@
 
 ## ⚠️ Verification status — read this first
 
-The commands in this document were written by reading the repo's actual Bicep, `azure.yaml`, app code and test configs, and they are internally consistent with them. **They have not been executed against a live Azure subscription**, because the environment this kit was authored in had no shell access.
+The commands in this document were written by reading the repo's Terraform, `azure.yaml`, app code and test configs, and they are internally consistent with them. Rehearse them against the live subscription before presenting.
 
 Treat this as a **carefully-derived runbook, not a transcript.** Budget an hour for your first run and expect to hit one or two environment-specific snags. Every step below has a "how you know it worked" check so you find problems immediately rather than three steps later.
 
@@ -24,7 +24,7 @@ These are the wiring mistakes that fail silently — the test runs, produces num
 
 | Check | Why it matters | Result |
 |---|---|---|
-| `azure.yaml` service key `api` ↔ `azd-service-name: api` tag in `host.bicep` | A mismatch makes `azd deploy` fail with "no matching resource" | ✅ match |
+| `azure.yaml` service key `api` ↔ `azd-service-name: api` tag in `infra/main.tf` | A mismatch makes `azd deploy` fail with "no matching resource" | ✅ match |
 | JMX sampler names ↔ per-sampler `failureCriteria` in `peak-load.yaml` | A typo means the criterion **never evaluates** and the test always passes | ✅ all four match (`GetBalance`, `GetTransactions`, `CreateTransfer`, `GenerateStatement`) |
 | `accounts.csv` header ↔ JMX `variableNames` | A mismatch sends literal `${accountId}` in the URL — every request 404s | ✅ match, `ignoreFirstLine=true` correct |
 | `gunicorn`/`uvicorn` present; bind port ↔ Oryx default | Wrong port = container never becomes healthy | ✅ both present, port 8000 correct |
@@ -35,7 +35,7 @@ These are the wiring mistakes that fail silently — the test runs, produces num
 <stringProp name="HTTPSampler.domain">${__BeanShell(System.getenv("BASE_URL"))}</stringProp>
 ```
 
-That re-invokes the BeanShell interpreter **on every request, for every virtual user**. At 1,000 VUs it would burn engine CPU on script interpretation and you'd end up measuring your load generator rather than the app. It now follows the [documented Microsoft pattern](https://learn.microsoft.com/azure/load-testing/how-to-parameterize-load-tests) — resolved once into a User Defined Variable at test-plan start, then referenced cheaply:
+That re-invokes the BeanShell interpreter **on every request, for every virtual user**. At 1,000 VUs it would burn engine CPU on script interpretation and you'd end up measuring your load generator rather than the app. It now follows the [documented Microsoft pattern](https://learn.microsoft.com/azure/app-testing/load-testing/how-to-parameterize-load-tests) — resolved once into a User Defined Variable at test-plan start, then referenced cheaply:
 
 ```xml
 <stringProp name="HTTPSampler.domain">${udv_baseUrl}</stringProp>
@@ -76,7 +76,7 @@ flowchart LR
 | ② | **Load generator** | The Azure Load Testing resource. Runs your JMeter/Locust script on managed engines. | `azd up` |
 | ③ | **Observability** | App Insights + Log Analytics. Turns "it's slow" into "it's slow *because*". | `azd up` |
 
-**The single most important arrow** is the dotted one from ② to ③. Azure Load Testing reads your app's server-side metrics through its managed identity. Without the **Monitoring Reader** role assignment, the metrics charts render **empty, with no error message telling you why**. The Bicep does this for you (`infra/core/rbac.bicep`) — but it is why so many first-time demos fall flat.
+**The single most important arrow** is the dotted one from ② to ③. Azure Load Testing reads your app's server-side metrics through its managed identity. Without the **Monitoring Reader** role assignment, the metrics charts render **empty, with no error message telling you why**. Terraform does this for you in `infra/main.tf` — but it is why so many first-time demos fall flat.
 
 ### The demo arc this all exists to support
 
@@ -96,14 +96,10 @@ That arc is the demo. Everything in this repo exists to make it repeatable.
 azure-load-test/
 ├── azure.yaml                 ← azd entry point. Maps ./src to App Service.
 ├── infra/
-│   ├── main.bicep             ← what `azd up` runs (subscription-scoped)
-│   ├── core/
-│   │   ├── host.bicep         ← App Service plan + web app. Read this one.
-│   │   ├── loadtest.bicep     ← the ALT resource (~20 lines. That's the pitch.)
-│   │   ├── monitoring.bicep   ← Log Analytics + App Insights
-│   │   └── rbac.bicep         ← Monitoring Reader. THE STEP EVERYONE FORGETS.
-│   ├── main.tf, variables.tf  ← Terraform equivalent (customer's preference)
-│   └── outputs.tf, providers.tf
+│   ├── main.tf                ← Terraform stack used by azd provision
+│   ├── variables.tf
+│   ├── outputs.tf             ← uppercase azd outputs for hooks and CI
+│   └── providers.tf
 ├── src/
 │   ├── main.py                ← the API. 6 bottlenecks + /admin/config to flip them.
 │   └── requirements.txt
@@ -115,7 +111,8 @@ azure-load-test/
 │   │   ├── secrets-demo.yaml   ← Key Vault secret resolution via managed identity
 │   │   ├── url-basic.yaml
 │   │   ├── url-smoke.yaml
-│   │   └── url-curl.yaml
+│   │   ├── url-curl.yaml
+│   │   └── url-false-green.yaml
 │   ├── jmeter/contoso-bank.jmx
 │   ├── locust/locustfile.py
 │   ├── data/accounts.csv      ← split across engines at run time
@@ -135,9 +132,9 @@ azure-load-test/
 | File | Why | Read time |
 |---|---|---|
 | `src/main.py` §PRESETS (~line 120) | The two states the whole demo pivots between | 1 min |
-| `infra/core/host.bicep` | Three deliberate choices with comments explaining each | 3 min |
+| `infra/main.tf` App Service block | Three deliberate choices with comments explaining each | 3 min |
 | `loadtests/config/peak-load.yaml` | The test you'll actually run, incl. fail + abort criteria | 3 min |
-| `infra/core/rbac.bicep` | 40 lines, mostly comment, explaining the #1 failure mode | 1 min |
+| `infra/main.tf` role assignments | The Monitoring Reader and Key Vault RBAC wiring everyone forgets | 1 min |
 
 ### The six planted bottlenecks
 
@@ -152,7 +149,7 @@ All live in `src/main.py` and are flipped at runtime via `POST /admin/config`:
 | `fraud_check_parallel` | `false` | `true` | Sequential downstream calls |
 | `statement_cpu_rounds` | `30000` | `1500` | CPU burn on the reporting endpoint |
 
-> **Note the naming.** The HTTP API uses **snake_case** (`enable_cache`). The App Service settings in Bicep use **UPPER_SNAKE** (`ENABLE_CACHE`). Sending camelCase to the API returns a `422`.
+> **Note the naming.** The HTTP API uses **snake_case** (`enable_cache`). The App Service settings in Terraform use **UPPER_SNAKE** (`ENABLE_CACHE`). Sending camelCase to the API returns a `422`.
 
 ---
 
@@ -175,7 +172,7 @@ python --version    # optional: 3.10+ for the helper scripts
 You also need, in the target subscription:
 
 - **Contributor** — to create the resources
-- **User Access Administrator** or **Owner** — because `rbac.bicep` creates a role assignment. **Plain Contributor is not enough and this is a common first-run failure.** See §18.10.
+- **User Access Administrator** or **Owner** — because Terraform creates role assignments. **Plain Contributor is not enough and this is a common first-run failure.** See §18.10.
 - A region where Azure Load Testing is available (`az provider show -n Microsoft.LoadTestService --query "resourceTypes[?resourceType=='loadTests'].locations" -o tsv`)
 
 ```powershell
@@ -502,13 +499,13 @@ azd down --purge --force    # tears everything down
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `azd up` fails on the role assignment | You're Contributor, not Owner/UAA. **Most likely failure.** | Get User Access Administrator, or comment out the `rbac` module in `main.bicep` and have an admin assign Monitoring Reader manually |
+| `azd up` fails on the role assignment | You're Contributor, not Owner/UAA. **Most likely failure.** | Get User Access Administrator, or have an admin assign Monitoring Reader and Key Vault roles manually if you temporarily remove the role-assignment resources from Terraform |
 | `/health` times out on first call | Cold container start | Wait 60s, retry once. Then check **Log stream** in the portal |
 | App returns 500s | Oryx build failed | Portal → App Service → **Deployment Center → Logs**, or `azd deploy --debug` |
 | **Server-side metrics chart empty** | Missing Monitoring Reader, or no App Components | Verify: `az role assignment list --assignee <alt-principal-id> -o table`. See §18.6 |
 | Test runs but 100% errors | **Hostname not retargeted** | Re-run §18.5. Check the Errors tab for DNS/404 |
 | `az load` not recognised | Extension missing outside the hook | `az extension add --name load` |
-| `testResult: NOT_APPLICABLE` | No fail criteria in the config | Expected for URL-based tests; see doc 07 §7.2 |
+| `testResult: NOT_APPLICABLE` | Either the config genuinely has no `failureCriteria`, **or** you read the field before the pass/fail evaluation settled | Re-query after ~10s. If it still says `NOT_APPLICABLE`, check the test definition: `az load test show ... --query passFailCriteria.passFailMetrics`. Empty means the criteria really are missing. See doc 07 §7.2 |
 | Region rejects the ALT resource | Not available in that region | Pick another region and re-run `azd up` |
 | Bottleneck isn't visible | App scaled out, or already `optimized` | Confirm plan capacity is 1; `GET /admin/config` |
 

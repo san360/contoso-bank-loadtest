@@ -7,7 +7,7 @@
           "requestName": "Always404FalseGreen",
           "requestType": "URL",
           "method": "GET",
-          "endpoint": "https://app-loadtest-bxbs6q.azurewebsites.net/api/false-green-404",
+          "endpoint": "https://app-loadtest-27d2e5.azurewebsites.net/api/false-green-404",
           "queryParameters": [],
           "headers": {
             "Accept": "application/json"

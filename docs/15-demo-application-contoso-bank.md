@@ -194,7 +194,7 @@ curl https://$SERVICE_API_HOSTNAME/health
 curl https://$SERVICE_API_HOSTNAME/admin/config
 ```
 
-The Bicep sets the app settings so a fresh deployment **starts in the bottlenecked state**. You want the demo to open with the problem, not the solution.
+Terraform sets the app settings so a fresh deployment **starts in the bottlenecked state**. You want the demo to open with the problem, not the solution.
 
 ---
 
@@ -243,13 +243,10 @@ This split exists because several transitive dependencies (`cryptography`, `http
 azure-load-test/
 ├── azure.yaml                       # azd configuration
 ├── infra/
-│   ├── main.bicep                   # subscription-scope entry point
-│   ├── main.parameters.json
-│   └── core/
-│       ├── monitoring.bicep         # Log Analytics + App Insights
-│       ├── host.bicep               # App Service plan + Python web app
-│       ├── loadtest.bicep           # Microsoft.LoadTestService/loadTests
-│       └── rbac.bicep               # Monitoring Reader  <-- the forgotten step
+│   ├── main.tf                      # Terraform stack used by azd provision
+│   ├── variables.tf
+│   ├── outputs.tf                   # azd environment outputs for hooks/CI
+│   └── providers.tf
 ├── src/
 │   ├── main.py                      # the Contoso Bank API
 │   ├── contoso-bank.http            # REST Client collection (Copilot source)
@@ -264,6 +261,11 @@ azure-load-test/
 │   ├── config/pr-gate.yaml          # small, fast, every PR
 │   ├── config/peak-load.yaml        # 1,000 VUs, nightly
 │   ├── config/peak-load-locust.yaml
+│   ├── config/secrets-demo.yaml
+│   ├── config/url-basic.yaml
+│   ├── config/url-smoke.yaml
+│   ├── config/url-curl.yaml
+│   ├── config/url-false-green.yaml
 │   └── url-tests/contoso-bank-smoke.json
 ├── tools/
 │   └── validate_bottlenecks.py      # proves the bottlenecks actually bite

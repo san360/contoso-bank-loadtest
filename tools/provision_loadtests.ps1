@@ -101,7 +101,16 @@ function Get-HookValue {
 
 function Get-RelativePath {
     param([string]$Path)
-    return [System.IO.Path]::GetRelativePath($script:RepoRoot, $Path).Replace('\', '/')
+    if ([System.IO.Path].GetMethods().Name -contains 'GetRelativePath') {
+        return [System.IO.Path]::GetRelativePath($script:RepoRoot, $Path).Replace('\', '/')
+    }
+
+    $root = (Resolve-Path -LiteralPath $script:RepoRoot).Path.TrimEnd('\')
+    $full = (Resolve-Path -LiteralPath $Path).Path
+    if ($full.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
+        return $full.Substring($root.Length).TrimStart('\').Replace('\', '/')
+    }
+    return $Path.Replace('\', '/')
 }
 
 function Normalize-Host {
@@ -175,6 +184,45 @@ function Retarget-LoadTestArtifacts {
         Write-Host "  Python is not on PATH. Using the native PowerShell fallback promised by azure.yaml."
     }
     Update-TargetHostNative -TargetHost $targetHost
+}
+
+function Update-KeyVaultReferences {
+    param([Parameter(Mandatory = $true)][string]$KeyVaultName)
+
+    Write-Step "Retargeting Key Vault secret references to $KeyVaultName"
+
+    $patterns = @('*.yaml', '*.yml', '*.json')
+    $files = foreach ($pattern in $patterns) {
+        Get-ChildItem -Path (Join-Path $script:RepoRoot 'loadtests') -Recurse -File -Filter $pattern -ErrorAction SilentlyContinue
+    }
+
+    # Deliberately drops any trailing /<version> segment. A pinned version dies the
+    # moment the vault is recreated; the version-less form always resolves to the
+    # current secret.
+    $vaultPattern = [regex]'https://[a-z0-9-]+\.vault\.azure\.net/secrets/([A-Za-z0-9-]+)(?:/[0-9a-fA-F]+)?'
+    $hits = 0
+
+    foreach ($file in ($files | Sort-Object FullName -Unique)) {
+        $original = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8
+        $localHits = 0
+        $updated = $vaultPattern.Replace($original, {
+                param($match)
+                $desired = "https://$KeyVaultName.vault.azure.net/secrets/$($match.Groups[1].Value)"
+                if ($match.Value -ceq $desired) { return $match.Value }
+                $localHits++
+                return $desired
+            })
+
+        if ($updated -ne $original) {
+            Set-Content -LiteralPath $file.FullName -Value $updated -Encoding UTF8 -NoNewline
+            $hits += $localHits
+            Write-Host ("  ->  {0}  ({1} secret URI(s) updated)" -f (Get-RelativePath $file.FullName), $localHits)
+        }
+    }
+
+    if ($hits -eq 0) {
+        Write-Host "  =  no Key Vault secret URIs needed updating"
+    }
 }
 
 function Ensure-Prerequisites {
@@ -287,6 +335,197 @@ function Get-ValidationStatus {
     if ($statuses -contains 'VALIDATION_FAILURE') { return 'VALIDATION_FAILURE' }
     if (@($statuses | Where-Object { $_ -ne 'VALIDATION_SUCCESS' }).Count -eq 0) { return 'VALIDATION_SUCCESS' }
     return (($statuses | Sort-Object -Unique) -join ',')
+}
+
+function Get-ResourceInfo {
+    param(
+        [Parameter(Mandatory = $true)][string]$ResourceId,
+        [string]$SubscriptionId
+    )
+
+    $args = @('resource', 'show', '--ids', $ResourceId, '--only-show-errors', '-o', 'json')
+    if ($SubscriptionId) { $args += @('--subscription', $SubscriptionId) }
+
+    $result = Invoke-External 'az' $args
+    if (-not $result.Ok) {
+        throw "Could not read Azure resource '$ResourceId'.`n$($result.Output)"
+    }
+
+    return ($result.Output | ConvertFrom-Json)
+}
+
+function Invoke-LoadTestList {
+    param(
+        [string]$Command,
+        [string]$LoadTestName,
+        [string]$ResourceGroup,
+        [string]$SubscriptionId,
+        [string]$TestId
+    )
+
+    $args = @(
+        'load', 'test', $Command, 'list',
+        '--load-test-resource', $LoadTestName,
+        '--resource-group', $ResourceGroup,
+        '--test-id', $TestId,
+        '--only-show-errors',
+        '-o', 'json'
+    )
+    if ($SubscriptionId) { $args += @('--subscription', $SubscriptionId) }
+
+    $result = Invoke-External 'az' $args
+    if ($result.Ok) { return $result.Output }
+    if ($result.Output -match '(?i)notfound|not found|not.*config') { return '' }
+    throw "Could not list $Command for test '$TestId'.`n$($result.Output)"
+}
+
+function Add-AppComponentIfMissing {
+    param(
+        [string]$TestId,
+        [object]$Component,
+        [string]$ExistingJson,
+        [string]$LoadTestName,
+        [string]$ResourceGroup,
+        [string]$SubscriptionId
+    )
+
+    if ($ExistingJson.IndexOf($Component.id, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        return $false
+    }
+
+    $args = @(
+        'load', 'test', 'app-component', 'add',
+        '--load-test-resource', $LoadTestName,
+        '--resource-group', $ResourceGroup,
+        '--test-id', $TestId,
+        '--app-component-id', $Component.id,
+        '--app-component-name', $Component.name,
+        '--app-component-type', $Component.type,
+        '--only-show-errors',
+        '-o', 'none'
+    )
+    if ($Component.kind) { $args += @('--app-component-kind', $Component.kind) }
+    if ($SubscriptionId) { $args += @('--subscription', $SubscriptionId) }
+
+    $result = Invoke-External 'az' $args
+    if (-not $result.Ok -and -not (Test-AlreadyExists $result.Output)) {
+        throw "Could not add app component '$($Component.id)' to test '$TestId'.`n$($result.Output)"
+    }
+    return $true
+}
+
+function Add-ServerMetricIfMissing {
+    param(
+        [string]$TestId,
+        [object]$Component,
+        [string]$MetricName,
+        [string]$MetricNamespace,
+        [string]$Aggregation,
+        [string]$ExistingJson,
+        [string]$LoadTestName,
+        [string]$ResourceGroup,
+        [string]$SubscriptionId
+    )
+
+    $metricIdName = [System.Uri]::EscapeDataString($MetricName)
+    $rawMetricId = "$($Component.id)/providers/microsoft.insights/metricdefinitions/$MetricName"
+    $metricId = "$($Component.id)/providers/microsoft.insights/metricdefinitions/$metricIdName"
+    $hasMetric = (
+        $ExistingJson.IndexOf($metricId, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+        $ExistingJson.IndexOf($rawMetricId, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    )
+    if ($hasMetric) { return $false }
+
+    $args = @(
+        'load', 'test', 'server-metric', 'add',
+        '--load-test-resource', $LoadTestName,
+        '--resource-group', $ResourceGroup,
+        '--test-id', $TestId,
+        '--app-component-id', $Component.id,
+        '--app-component-type', $Component.type,
+        '--metric-id', $metricId,
+        '--metric-name', $MetricName,
+        '--metric-namespace', $MetricNamespace,
+        '--aggregation', $Aggregation,
+        '--only-show-errors',
+        '-o', 'none'
+    )
+    if ($SubscriptionId) { $args += @('--subscription', $SubscriptionId) }
+
+    $result = Invoke-External 'az' $args
+    if (-not $result.Ok -and -not (Test-AlreadyExists $result.Output)) {
+        if ($MetricName.Contains('/') -and $result.Output -match 'metric-id is not a valid Azure Resource ID') {
+            Write-Warning "  Skipping server metric '$MetricName' for test '$TestId': the current Azure CLI load extension rejects this Azure Monitor metric definition ID."
+            return $false
+        }
+        throw "Could not add server metric '$MetricName' to test '$TestId'.`n$($result.Output)"
+    }
+    return $true
+}
+
+function Enable-ServerSideMonitoring {
+    param(
+        [string]$LoadTestName,
+        [string]$ResourceGroup,
+        [string]$SubscriptionId,
+        [string]$ServiceApiResourceId,
+        [string]$ApplicationInsightsResourceId,
+        [string]$AppServicePlanResourceId
+    )
+
+    Write-Step "Configuring server-side metrics for diagnostic tests"
+
+    $components = @{
+        AppService          = Get-ResourceInfo -ResourceId $ServiceApiResourceId -SubscriptionId $SubscriptionId
+        ApplicationInsights = Get-ResourceInfo -ResourceId $ApplicationInsightsResourceId -SubscriptionId $SubscriptionId
+        AppServicePlan      = Get-ResourceInfo -ResourceId $AppServicePlanResourceId -SubscriptionId $SubscriptionId
+    }
+
+    $targetTests = @(
+        'contoso-bank-peak-load',
+        'contoso-bank-peak-load-locust',
+        'contoso-bank-pr-gate'
+    )
+
+    $metrics = @(
+        [pscustomobject]@{ Component = 'AppServicePlan';      Name = 'CpuPercentage';                         Namespace = 'Microsoft.Web/serverfarms';     Aggregation = 'Average' },
+        [pscustomobject]@{ Component = 'AppServicePlan';      Name = 'MemoryPercentage';                      Namespace = 'Microsoft.Web/serverfarms';     Aggregation = 'Average' },
+        [pscustomobject]@{ Component = 'AppServicePlan';      Name = 'HttpQueueLength';                       Namespace = 'Microsoft.Web/serverfarms';     Aggregation = 'Maximum' },
+        [pscustomobject]@{ Component = 'AppService';          Name = 'HttpResponseTime';                      Namespace = 'Microsoft.Web/sites';           Aggregation = 'Average' },
+        [pscustomobject]@{ Component = 'AppService';          Name = 'Requests';                              Namespace = 'Microsoft.Web/sites';           Aggregation = 'Total' },
+        [pscustomobject]@{ Component = 'AppService';          Name = 'Http5xx';                               Namespace = 'Microsoft.Web/sites';           Aggregation = 'Total' },
+        [pscustomobject]@{ Component = 'AppService';          Name = 'MemoryWorkingSet';                      Namespace = 'Microsoft.Web/sites';           Aggregation = 'Average' },
+        [pscustomobject]@{ Component = 'AppService';          Name = 'InstanceCount';                         Namespace = 'Microsoft.Web/sites';           Aggregation = 'Average' },
+        [pscustomobject]@{ Component = 'ApplicationInsights'; Name = 'requests/duration';                     Namespace = 'microsoft.insights/components'; Aggregation = 'Average' },
+        [pscustomobject]@{ Component = 'ApplicationInsights'; Name = 'requests/count';                        Namespace = 'microsoft.insights/components'; Aggregation = 'Count' },
+        [pscustomobject]@{ Component = 'ApplicationInsights'; Name = 'requests/failed';                       Namespace = 'microsoft.insights/components'; Aggregation = 'Count' },
+        [pscustomobject]@{ Component = 'ApplicationInsights'; Name = 'requests/rate';                         Namespace = 'microsoft.insights/components'; Aggregation = 'Average' },
+        [pscustomobject]@{ Component = 'ApplicationInsights'; Name = 'performanceCounters/requestsInQueue';   Namespace = 'microsoft.insights/components'; Aggregation = 'Maximum' },
+        [pscustomobject]@{ Component = 'ApplicationInsights'; Name = 'performanceCounters/processCpuPercentage'; Namespace = 'microsoft.insights/components'; Aggregation = 'Average' },
+        [pscustomobject]@{ Component = 'ApplicationInsights'; Name = 'performanceCounters/processPrivateBytes';  Namespace = 'microsoft.insights/components'; Aggregation = 'Average' }
+    )
+
+    foreach ($testId in $targetTests) {
+        Write-Host "  Ensuring App Components and metrics on '$testId'..."
+        $existingComponents = Invoke-LoadTestList -Command 'app-component' -LoadTestName $LoadTestName -ResourceGroup $ResourceGroup -SubscriptionId $SubscriptionId -TestId $testId
+        $componentsAdded = 0
+        foreach ($component in $components.Values) {
+            if (Add-AppComponentIfMissing -TestId $testId -Component $component -ExistingJson $existingComponents -LoadTestName $LoadTestName -ResourceGroup $ResourceGroup -SubscriptionId $SubscriptionId) {
+                $componentsAdded++
+            }
+        }
+
+        $existingMetrics = Invoke-LoadTestList -Command 'server-metric' -LoadTestName $LoadTestName -ResourceGroup $ResourceGroup -SubscriptionId $SubscriptionId -TestId $testId
+        $metricsAdded = 0
+        foreach ($metric in $metrics) {
+            $component = $components[$metric.Component]
+            if (Add-ServerMetricIfMissing -TestId $testId -Component $component -MetricName $metric.Name -MetricNamespace $metric.Namespace -Aggregation $metric.Aggregation -ExistingJson $existingMetrics -LoadTestName $LoadTestName -ResourceGroup $ResourceGroup -SubscriptionId $SubscriptionId) {
+                $metricsAdded++
+            }
+        }
+
+        Write-Host "    [OK] App Components present ($componentsAdded added); server metrics present ($metricsAdded added)."
+    }
 }
 
 function New-OrUpdate-LoadTest {
@@ -421,6 +660,9 @@ try {
     $loadTestName = Get-HookValue 'LOAD_TEST_NAME' -Required
     $loadTestResourceId = Get-HookValue 'LOAD_TEST_RESOURCE_ID'
     $keyVaultName = Get-HookValue 'KEY_VAULT_NAME'
+    $serviceApiResourceId = Get-HookValue 'SERVICE_API_RESOURCE_ID' -Required
+    $applicationInsightsResourceId = Get-HookValue 'APPLICATIONINSIGHTS_RESOURCE_ID' -Required
+    $appServicePlanResourceId = Get-HookValue 'APP_SERVICE_PLAN_RESOURCE_ID' -Required
 
     if ([string]::IsNullOrWhiteSpace($loadTestResourceId) -and -not [string]::IsNullOrWhiteSpace($subscriptionId)) {
         $loadTestResourceId = "/subscriptions/$subscriptionId/resourceGroups/$resourceGroup/providers/Microsoft.LoadTestService/loadTests/$loadTestName"
@@ -428,6 +670,9 @@ try {
 
     Ensure-Prerequisites
     Retarget-LoadTestArtifacts -ServiceHostName $serviceHostName
+    if (-not [string]::IsNullOrWhiteSpace($keyVaultName)) {
+        Update-KeyVaultReferences -KeyVaultName $keyVaultName
+    }
 
     Write-Step "Seeding optional Key Vault demo secret"
     Set-DemoSecret -KeyVaultName $keyVaultName -SubscriptionId $subscriptionId
@@ -442,6 +687,14 @@ try {
         $metadata = Read-TestConfigMetadata -Path $file.FullName
         New-OrUpdate-LoadTest -Config $metadata -LoadTestName $loadTestName -ResourceGroup $resourceGroup -SubscriptionId $subscriptionId
     }
+
+    Enable-ServerSideMonitoring `
+        -LoadTestName $loadTestName `
+        -ResourceGroup $resourceGroup `
+        -SubscriptionId $subscriptionId `
+        -ServiceApiResourceId $serviceApiResourceId `
+        -ApplicationInsightsResourceId $applicationInsightsResourceId `
+        -AppServicePlanResourceId $appServicePlanResourceId
 
     Write-Step "Provisioned load test definitions"
     $script:Summary | Format-Table -AutoSize

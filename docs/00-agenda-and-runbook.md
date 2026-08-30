@@ -7,7 +7,7 @@
 
 ## 1. Agenda mapping
 
-The agenda below reflects **your revised list plus the review feedback** received after the first draft. Docs 02, 07, 11, 12, 13, 14 and **17** were added because the original agenda didn't cover them.
+The agenda below reflects **your revised list plus the review feedback** received after the first draft. Docs 02, 07, 11, 12, 13, 14, **17**, 18 and 19 were added because the original agenda didn't cover them.
 
 | # | Agenda item | Doc in this repo | Status |
 |---|---|---|---|
@@ -16,7 +16,7 @@ The agenda below reflects **your revised list plus the review feedback** receive
 | 3 | How it works — architecture & core components | [`03-architecture-how-it-works.md`](03-architecture-how-it-works.md) | Kept, expanded |
 | 4 | Service feature overview & portal walkthrough | [`04-portal-feature-walkthrough.md`](04-portal-feature-walkthrough.md) | **Reframed** — portal as *learning* surface, not operating surface |
 | 5 | Test creation options: URL-based, JMeter, Locust | [`06-demo-create-run-inspect.md`](06-demo-create-run-inspect.md) | Promoted to its own agenda item |
-| 6 | **Deploying & operating as code — Terraform + Azure CLI** | [`05-deployment-and-operations-as-code.md`](05-deployment-and-operations-as-code.md) | **REWRITTEN** — was Bicep-only. Terraform-first per review; Bicep → appendix |
+| 6 | **Deploying & operating as code — Terraform + Azure CLI** | [`05-deployment-and-operations-as-code.md`](05-deployment-and-operations-as-code.md) | **REWRITTEN** — Terraform-first after the Bicep-to-Terraform migration |
 | 7 | Demo: create, run & inspect a load test | [`06-demo-create-run-inspect.md`](06-demo-create-run-inspect.md) | **Moved before CI/CD**; ➕ the *false-green* demo (§6.4a) |
 | 8 | Analyse results: dashboard, bottlenecks, fail **and abort** criteria | [`07-analyzing-results-and-bottlenecks.md`](07-analyzing-results-and-bottlenecks.md) | **NEW** section, now ➕ run status taxonomy (§7.2) and AutoStop (§7.9) |
 | 9 | **Portal-free operations & LGTM/Grafana integration** | [`17-portal-free-operations-and-observability.md`](17-portal-free-operations-and-observability.md) | **NEW** — direct response to review feedback |
@@ -29,7 +29,7 @@ The agenda below reflects **your revised list plus the review feedback** receive
 | — | Adoption roadmap & next steps | [`14-adoption-roadmap-next-steps.md`](14-adoption-roadmap-next-steps.md) | **NEW** — never end without a "what happens Monday" slide |
 | — | Demo application spec | [`15-demo-application-contoso-bank.md`](15-demo-application-contoso-bank.md) | Reference |
 | — | Reference repos, links & **facts to verify** | [`16-reference-repos-and-links.md`](16-reference-repos-and-links.md) | Reference |
-| — | *(superseded)* Bicep-only version of §05 | [`05-deployment-bicep-iac.md`](05-deployment-bicep-iac.md) | ⚠️ **Do not present from this file** |
+| — | Recording walkthrough & test catalog | [`19-recording-and-test-catalog.md`](19-recording-and-test-catalog.md) | Reference |
 
 ### What changed after review — the five deltas
 

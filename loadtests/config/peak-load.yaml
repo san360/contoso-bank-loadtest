@@ -44,7 +44,7 @@ properties:
 
 env:
   - name: BASE_URL
-    value: app-loadtest-bxbs6q.azurewebsites.net
+    value: app-loadtest-27d2e5.azurewebsites.net
   - name: threads
     value: "250"
   - name: rampup
@@ -59,7 +59,7 @@ env:
 # Requires: Key Vault Secrets User on the vault for the load test identity.
 # secrets:
 #   - name: API_KEY
-#     value: https://kv-contoso-demo.vault.azure.net/secrets/demo-api-key
+#     value: https://kv-loadtest-27d2e5.vault.azure.net/secrets/demo-api-key
 
 # -----------------------------------------------------------------------------
 # Failure criteria: the SLOs the business actually signed up to.
@@ -79,10 +79,12 @@ autoStop:
   timeWindow: 60
 
 # -----------------------------------------------------------------------------
-# App Components turn this from a black-box test into a diagnosis.
-# Without these you learn THAT it is slow. With them you learn WHY.
+# App Components turn this from a black-box test into a diagnosis. The YAML
+# schema supports an appComponents block, but this demo does not hardcode
+# resource IDs in source. `azd up` runs tools/provision_loadtests.* after deploy;
+# those hooks read the App Service, App Insights and App Service Plan IDs from
+# the azd environment and attach the components/metrics with `az load`.
 #
-# Replace the placeholders, or let `azd up` + the deploy script fill them in.
 # The load test resource's managed identity needs Monitoring Reader on these -
 # this is the single most commonly forgotten step. See docs/07.
 # -----------------------------------------------------------------------------

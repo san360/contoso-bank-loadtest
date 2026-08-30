@@ -28,7 +28,7 @@ version: v0.1
 
 testId: contoso-bank-url-false-green
 displayName: Contoso Bank - URL False Green
-description: Intentionally criteria-less URL test that hits a guaranteed 404 to demonstrate DONE / NOT_APPLICABLE.
+description: Criteria-less URL test hitting a guaranteed 404 for DONE / NOT_APPLICABLE demo.
 
 testType: URL
 testPlan: ../url-tests/contoso-bank-false-green.json

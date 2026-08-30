@@ -147,7 +147,34 @@ retarget_artifacts() {
         printf '  Python is not on PATH. Using the native POSIX fallback promised by azure.yaml.\n'
     fi
     retarget_native "$target_host"
-    retarget_native "$target_host"
+}
+
+retarget_keyvault() {
+    vault_name=$1
+    [ -n "$vault_name" ] || return 0
+
+    say_step "Retargeting Key Vault secret references to $vault_name"
+
+    # Deliberately drops any trailing /<version> segment. A pinned version dies the
+    # moment the vault is recreated; the version-less form always resolves to the
+    # current secret.
+    kv_hits=0
+    for file in $(find "$REPO_ROOT/loadtests" -type f \( -name '*.yaml' -o -name '*.yml' -o -name '*.json' \) 2>/dev/null); do
+        grep -Eq 'https://[a-z0-9-]+\.vault\.azure\.net/secrets/' "$file" || continue
+        tmp="$file.kvtmp.$$"
+        sed -E "s#https://[a-z0-9-]+\.vault\.azure\.net/secrets/([A-Za-z0-9-]+)(/[0-9a-fA-F]+)?#https://${vault_name}.vault.azure.net/secrets/\1#g" "$file" > "$tmp"
+        if cmp -s "$file" "$tmp"; then
+            rm -f "$tmp"
+        else
+            mv "$tmp" "$file"
+            kv_hits=$((kv_hits + 1))
+            printf '  ->  %s  (secret URI updated)\n' "$(relative_path "$file")"
+        fi
+    done
+
+    if [ "$kv_hits" = "0" ]; then
+        printf '  =  no Key Vault secret URIs needed updating\n'
+    fi
 }
 
 read_yaml_value() {
@@ -206,6 +233,189 @@ validation_status() {
     else
         printf 'UNKNOWN'
     fi
+}
+
+resource_property() {
+    resource_id=$1
+    property=$2
+    if [ -n "$AZURE_SUBSCRIPTION_ID" ]; then
+        az resource show --ids "$resource_id" --subscription "$AZURE_SUBSCRIPTION_ID" --query "$property" --only-show-errors -o tsv
+    else
+        az resource show --ids "$resource_id" --query "$property" --only-show-errors -o tsv
+    fi
+}
+
+component_json() {
+    test_id=$1
+    set +e
+    if [ -n "$AZURE_SUBSCRIPTION_ID" ]; then
+        out=$(az load test app-component list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$test_id" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json 2>&1)
+    else
+        out=$(az load test app-component list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$test_id" --only-show-errors -o json 2>&1)
+    fi
+    code=$?
+    set -e
+    if [ "$code" -eq 0 ]; then
+        printf '%s' "$out"
+    elif printf '%s' "$out" | grep -Eiq 'notfound|not found|not.*config'; then
+        printf ''
+    else
+        fail "Could not list app components for test '$test_id'.\n$out"
+    fi
+}
+
+server_metric_json() {
+    test_id=$1
+    set +e
+    if [ -n "$AZURE_SUBSCRIPTION_ID" ]; then
+        out=$(az load test server-metric list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$test_id" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json 2>&1)
+    else
+        out=$(az load test server-metric list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$test_id" --only-show-errors -o json 2>&1)
+    fi
+    code=$?
+    set -e
+    if [ "$code" -eq 0 ]; then
+        printf '%s' "$out"
+    elif printf '%s' "$out" | grep -Eiq 'notfound|not found|not.*config'; then
+        printf ''
+    else
+        fail "Could not list server metrics for test '$test_id'.\n$out"
+    fi
+}
+
+json_contains() {
+    haystack=$1
+    needle=$2
+    printf '%s' "$haystack" | grep -Fiq "$needle"
+}
+
+encode_metric_name() {
+    printf '%s' "$1" | sed -e 's#/#%2F#g' -e 's# #%20#g'
+}
+
+add_app_component_if_missing() {
+    test_id=$1
+    existing=$2
+    component_id=$3
+    component_name=$4
+    component_type=$5
+    component_kind=$6
+
+    if json_contains "$existing" "$component_id"; then
+        return 1
+    fi
+
+    args="--load-test-resource $LOAD_TEST_NAME --resource-group $AZURE_RESOURCE_GROUP --test-id $test_id --app-component-id $component_id --app-component-name $component_name --app-component-type $component_type --only-show-errors -o none"
+    if [ -n "$component_kind" ] && [ "$component_kind" != "null" ]; then
+        args="$args --app-component-kind $component_kind"
+    fi
+    if [ -n "$AZURE_SUBSCRIPTION_ID" ]; then
+        args="$args --subscription $AZURE_SUBSCRIPTION_ID"
+    fi
+
+    set +e
+    out=$(az load test app-component add $args 2>&1)
+    code=$?
+    set -e
+    if [ "$code" -ne 0 ] && ! already_exists "$out"; then
+        fail "Could not add app component '$component_id' to test '$test_id'.\n$out"
+    fi
+    return 0
+}
+
+add_server_metric_if_missing() {
+    test_id=$1
+    existing=$2
+    component_id=$3
+    component_type=$4
+    metric_name=$5
+    metric_namespace=$6
+    aggregation=$7
+    metric_id="${component_id}/providers/microsoft.insights/metricdefinitions/$(encode_metric_name "$metric_name")"
+    raw_metric_id="${component_id}/providers/microsoft.insights/metricdefinitions/${metric_name}"
+
+    if json_contains "$existing" "$metric_id" || json_contains "$existing" "$raw_metric_id"; then
+        return 1
+    fi
+
+    args="--load-test-resource $LOAD_TEST_NAME --resource-group $AZURE_RESOURCE_GROUP --test-id $test_id --app-component-id $component_id --app-component-type $component_type --metric-id $metric_id --metric-name $metric_name --metric-namespace $metric_namespace --aggregation $aggregation --only-show-errors -o none"
+    if [ -n "$AZURE_SUBSCRIPTION_ID" ]; then
+        args="$args --subscription $AZURE_SUBSCRIPTION_ID"
+    fi
+
+    set +e
+    out=$(az load test server-metric add $args 2>&1)
+    code=$?
+    set -e
+    if [ "$code" -ne 0 ] && ! already_exists "$out"; then
+        # Cross-platform parity with provision_loadtests.ps1.
+        #
+        # Some builds of the az load extension reject Azure Monitor metric
+        # definition IDs whose metric name contains a slash (requests/duration,
+        # performanceCounters/processCpuPercentage, ...) because the encoded %2F
+        # fails their resource-ID validation. That is a CLI bug, not a config
+        # error, and the metric is optional colour on the dashboard.
+        #
+        # This must not be fatal. The postdeploy hook runs with
+        # continueOnError: false, so aborting here would fail the entire
+        # `azd up` on Linux and on the ubuntu CI runner while the Windows
+        # script merely warned and carried on - the classic "works on the
+        # presenter's laptop, breaks in the pipeline" split.
+        case "$metric_name" in
+            */*)
+                if printf '%s' "$out" | grep -q 'metric-id is not a valid Azure Resource ID'; then
+                    printf '    [WARN] Skipping server metric %s for test %s: this az load build rejects the Azure Monitor metric definition ID.\n' "$metric_name" "$test_id" >&2
+                    return 1
+                fi
+                ;;
+        esac
+        fail "Could not add server metric '$metric_name' to test '$test_id'.\n$out"
+    fi
+    return 0
+}
+
+configure_server_monitoring() {
+    say_step "Configuring server-side metrics for diagnostic tests"
+
+    app_name=$(resource_property "$SERVICE_API_RESOURCE_ID" name)
+    app_type=$(resource_property "$SERVICE_API_RESOURCE_ID" type)
+    app_kind=$(resource_property "$SERVICE_API_RESOURCE_ID" kind || true)
+    appi_name=$(resource_property "$APPLICATIONINSIGHTS_RESOURCE_ID" name)
+    appi_type=$(resource_property "$APPLICATIONINSIGHTS_RESOURCE_ID" type)
+    appi_kind=$(resource_property "$APPLICATIONINSIGHTS_RESOURCE_ID" kind || true)
+    plan_name=$(resource_property "$APP_SERVICE_PLAN_RESOURCE_ID" name)
+    plan_type=$(resource_property "$APP_SERVICE_PLAN_RESOURCE_ID" type)
+    plan_kind=$(resource_property "$APP_SERVICE_PLAN_RESOURCE_ID" kind || true)
+
+    for test_id in contoso-bank-peak-load contoso-bank-peak-load-locust contoso-bank-pr-gate; do
+        printf "  Ensuring App Components and metrics on '%s'...\n" "$test_id"
+
+        existing_components=$(component_json "$test_id")
+        components_added=0
+        add_app_component_if_missing "$test_id" "$existing_components" "$SERVICE_API_RESOURCE_ID" "$app_name" "$app_type" "$app_kind" && components_added=$((components_added + 1)) || true
+        add_app_component_if_missing "$test_id" "$existing_components" "$APPLICATIONINSIGHTS_RESOURCE_ID" "$appi_name" "$appi_type" "$appi_kind" && components_added=$((components_added + 1)) || true
+        add_app_component_if_missing "$test_id" "$existing_components" "$APP_SERVICE_PLAN_RESOURCE_ID" "$plan_name" "$plan_type" "$plan_kind" && components_added=$((components_added + 1)) || true
+
+        existing_metrics=$(server_metric_json "$test_id")
+        metrics_added=0
+        add_server_metric_if_missing "$test_id" "$existing_metrics" "$APP_SERVICE_PLAN_RESOURCE_ID" "$plan_type" "CpuPercentage" "Microsoft.Web/serverfarms" "Average" && metrics_added=$((metrics_added + 1)) || true
+        add_server_metric_if_missing "$test_id" "$existing_metrics" "$APP_SERVICE_PLAN_RESOURCE_ID" "$plan_type" "MemoryPercentage" "Microsoft.Web/serverfarms" "Average" && metrics_added=$((metrics_added + 1)) || true
+        add_server_metric_if_missing "$test_id" "$existing_metrics" "$APP_SERVICE_PLAN_RESOURCE_ID" "$plan_type" "HttpQueueLength" "Microsoft.Web/serverfarms" "Maximum" && metrics_added=$((metrics_added + 1)) || true
+        add_server_metric_if_missing "$test_id" "$existing_metrics" "$SERVICE_API_RESOURCE_ID" "$app_type" "HttpResponseTime" "Microsoft.Web/sites" "Average" && metrics_added=$((metrics_added + 1)) || true
+        add_server_metric_if_missing "$test_id" "$existing_metrics" "$SERVICE_API_RESOURCE_ID" "$app_type" "Requests" "Microsoft.Web/sites" "Total" && metrics_added=$((metrics_added + 1)) || true
+        add_server_metric_if_missing "$test_id" "$existing_metrics" "$SERVICE_API_RESOURCE_ID" "$app_type" "Http5xx" "Microsoft.Web/sites" "Total" && metrics_added=$((metrics_added + 1)) || true
+        add_server_metric_if_missing "$test_id" "$existing_metrics" "$SERVICE_API_RESOURCE_ID" "$app_type" "MemoryWorkingSet" "Microsoft.Web/sites" "Average" && metrics_added=$((metrics_added + 1)) || true
+        add_server_metric_if_missing "$test_id" "$existing_metrics" "$SERVICE_API_RESOURCE_ID" "$app_type" "InstanceCount" "Microsoft.Web/sites" "Average" && metrics_added=$((metrics_added + 1)) || true
+        add_server_metric_if_missing "$test_id" "$existing_metrics" "$APPLICATIONINSIGHTS_RESOURCE_ID" "$appi_type" "requests/duration" "microsoft.insights/components" "Average" && metrics_added=$((metrics_added + 1)) || true
+        add_server_metric_if_missing "$test_id" "$existing_metrics" "$APPLICATIONINSIGHTS_RESOURCE_ID" "$appi_type" "requests/count" "microsoft.insights/components" "Count" && metrics_added=$((metrics_added + 1)) || true
+        add_server_metric_if_missing "$test_id" "$existing_metrics" "$APPLICATIONINSIGHTS_RESOURCE_ID" "$appi_type" "requests/failed" "microsoft.insights/components" "Count" && metrics_added=$((metrics_added + 1)) || true
+        add_server_metric_if_missing "$test_id" "$existing_metrics" "$APPLICATIONINSIGHTS_RESOURCE_ID" "$appi_type" "requests/rate" "microsoft.insights/components" "Average" && metrics_added=$((metrics_added + 1)) || true
+        add_server_metric_if_missing "$test_id" "$existing_metrics" "$APPLICATIONINSIGHTS_RESOURCE_ID" "$appi_type" "performanceCounters/requestsInQueue" "microsoft.insights/components" "Maximum" && metrics_added=$((metrics_added + 1)) || true
+        add_server_metric_if_missing "$test_id" "$existing_metrics" "$APPLICATIONINSIGHTS_RESOURCE_ID" "$appi_type" "performanceCounters/processCpuPercentage" "microsoft.insights/components" "Average" && metrics_added=$((metrics_added + 1)) || true
+        add_server_metric_if_missing "$test_id" "$existing_metrics" "$APPLICATIONINSIGHTS_RESOURCE_ID" "$appi_type" "performanceCounters/processPrivateBytes" "microsoft.insights/components" "Average" && metrics_added=$((metrics_added + 1)) || true
+
+        printf '    [OK] App Components present (%s added); server metrics present (%s added).\n' "$components_added" "$metrics_added"
+    done
 }
 
 create_or_update_test() {
@@ -309,6 +519,9 @@ main() {
     LOAD_TEST_NAME=$(get_hook_value LOAD_TEST_NAME true)
     LOAD_TEST_RESOURCE_ID=$(get_hook_value LOAD_TEST_RESOURCE_ID false)
     KEY_VAULT_NAME=$(get_hook_value KEY_VAULT_NAME false)
+    SERVICE_API_RESOURCE_ID=$(get_hook_value SERVICE_API_RESOURCE_ID true)
+    APPLICATIONINSIGHTS_RESOURCE_ID=$(get_hook_value APPLICATIONINSIGHTS_RESOURCE_ID true)
+    APP_SERVICE_PLAN_RESOURCE_ID=$(get_hook_value APP_SERVICE_PLAN_RESOURCE_ID true)
 
     if [ -z "$LOAD_TEST_RESOURCE_ID" ] && [ -n "$AZURE_SUBSCRIPTION_ID" ]; then
         LOAD_TEST_RESOURCE_ID="/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$AZURE_RESOURCE_GROUP/providers/Microsoft.LoadTestService/loadTests/$LOAD_TEST_NAME"
@@ -316,6 +529,7 @@ main() {
 
     ensure_prerequisites
     retarget_artifacts "$SERVICE_API_HOSTNAME"
+    retarget_keyvault "$KEY_VAULT_NAME"
 
     say_step "Seeding optional Key Vault demo secret"
     seed_demo_secret "$KEY_VAULT_NAME"
@@ -338,6 +552,8 @@ main() {
     if [ "$found" -eq 0 ]; then
         fail "No load test YAML configs found under loadtests/config."
     fi
+
+    configure_server_monitoring
 
     say_step "Provisioned load test definitions"
     printf '%-36s %-10s %-7s %s\n' "Test id" "Test type" "Engines" "Validation status"

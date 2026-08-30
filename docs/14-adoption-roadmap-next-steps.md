@@ -30,7 +30,7 @@ Present this as a concrete, low-risk proposal — not a transformation programme
 **Goal:** one real service under automated load test, with a documented baseline.
 
 - [ ] Pick **one** important business service — high volume, well understood, ideally with a known performance concern. *Do not pick the hardest one.*
-- [ ] Provision the Load Testing resource via **Bicep/AVM** into the correct landing zone (doc 05)
+- [ ] Provision the Load Testing resource via **Terraform** into the correct landing zone (doc 05)
 - [ ] Configure RBAC, diagnostics, tagging; decide on CMK and VNet injection with the security team (doc 11)
 - [ ] Build the first test — start with a **URL-based test**, then move to JMeter/Locust for the real journey
 - [ ] Configure **App Components** for server-side metrics (doc 07)
@@ -71,7 +71,7 @@ Present this as a concrete, low-risk proposal — not a transformation programme
 
 | Role | What you need from them | When |
 |---|---|---|
-| **Platform / cloud engineering** | Landing zone placement, Bicep module, pipeline templates | Day 1 |
+| **Platform / cloud engineering** | Landing zone placement, Terraform module, pipeline templates | Day 1 |
 | **Security architecture** | Sign-off on CMK, RBAC model, data residency | Days 1–15 — **start early, this is the long pole** |
 | **Network engineering** | Subnet for VNet injection, DNS, firewall sizing | Days 1–15 if private endpoints are in scope |
 | **Service owner / product** | Which service, what "good" means, agreement on thresholds | Days 1–30 |

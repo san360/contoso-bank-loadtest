@@ -214,7 +214,7 @@ Use the checked-in URL test [`../loadtests/config/url-false-green.yaml`](../load
 Sanity-check the target before spending VUH:
 
 ```powershell
-curl.exe -i https://app-loadtest-bxbs6q.azurewebsites.net/api/false-green-404
+curl.exe -i https://app-loadtest-27d2e5.azurewebsites.net/api/false-green-404
 # HTTP/1.1 404 Not Found
 # {"detail":"Not Found"}
 ```
@@ -223,7 +223,7 @@ Create or refresh the test definition:
 
 ```powershell
 $RG = "rg-loadtest"
-$ALT_RESOURCE = "alt-loadtest-bxbs6q"
+$ALT_RESOURCE = "alt-loadtest-27d2e5"
 $SUBSCRIPTION_ID = "1da52b57-468a-4dc6-ba36-1255cc1f6e8e"
 $TEST_ID = "contoso-bank-url-false-green"
 
@@ -233,6 +233,9 @@ az load test create `
   --subscription $SUBSCRIPTION_ID `
   --test-id $TEST_ID `
   --load-test-config-file loadtests\config\url-false-green.yaml
+
+# If a previous rehearsal already created it, use the same arguments with:
+# az load test update ...
 ```
 
 ### The reveal, in three beats
@@ -271,7 +274,36 @@ az load test create `
    `NOT_APPLICABLE` is the real final value because the YAML genuinely has no
    `failureCriteria`.
 
-> **The line to land:** *"That test is green. Every request failed. If this were running in your pipeline tonight, it would have passed, and you'd have shipped a completely broken service. The status field was never telling you your app was healthy — it was telling you the load generator did its job."*
+#### Verified numbers from an actual run
+
+This is not a thought experiment. Run `false-green-proof-20260830-154506` of this
+exact test definition produced:
+
+| Field | Value |
+|---|---|
+| `status` | `DONE` |
+| `testResult` | `NOT_APPLICABLE` |
+| Total requests | **12,254** |
+| Errors | **12,254** |
+| Error rate | **100.00%** |
+| Duration | 3m 31s wall clock |
+| Estimated VUH | 2 |
+
+Every request failed. The run is green. If you want to reproduce the error rate
+yourself rather than reading it off the dashboard, note that
+`az load test-run show` does **not** return `testRunStatistics` in the current
+extension — pull the metrics instead:
+
+```powershell
+az load test-run metrics list `
+  --load-test-resource $ALT_RESOURCE --resource-group $RG `
+  --test-run-id $RUN_ID `
+  --metric-namespace LoadTestRunMetrics --metric-name Errors --aggregation Total -o json
+
+# Compare against --metric-name TotalRequests --aggregation Count
+```
+
+> **The line to land:** *"That test is green. Every request failed. If this were running in your pipeline tonight, it would have passed, and you'd have shipped a completely broken flow. The status field was never telling you your app was healthy — it was telling you the load generator did its job."*
 
 ### Then fix it, in front of them
 

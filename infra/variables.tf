@@ -1,70 +1,90 @@
-variable "name_prefix" {
-  description = "Short prefix for all resource names. Keep it lowercase and alphanumeric."
+#==============================================================================
+# Azure Developer CLI variables
+#==============================================================================
+# azd follows the Terraform templates documented at:
+#   https://learn.microsoft.com/azure/developer/azure-developer-cli/use-terraform-for-azd
+# and exemplified by Azure-Samples/todo-nodejs-mongo-terraform. It supplies:
+#   * environment_name  <- AZURE_ENV_NAME
+#   * location          <- AZURE_LOCATION
+#   * principal_id      <- AZURE_PRINCIPAL_ID
+# Keep these names snake_case; do not use the old Bicep parameter names here.
+#==============================================================================
+
+variable "environment_name" {
+  description = "The azd environment name. azd supplies this from AZURE_ENV_NAME."
   type        = string
-  default     = "contosobank"
 
   validation {
-    condition     = can(regex("^[a-z0-9]{3,16}$", var.name_prefix))
-    error_message = "name_prefix must be 3-16 lowercase alphanumeric characters."
+    condition     = can(regex("^[A-Za-z0-9_-]{1,24}$", var.environment_name))
+    error_message = "environment_name must be 1-24 letters, digits, hyphens or underscores."
   }
 }
 
 variable "location" {
-  description = "Azure region. Must be a region where Azure Load Testing is available."
+  description = "Azure region. azd supplies this from AZURE_LOCATION. Must support Azure Load Testing and Linux App Service."
   type        = string
-  default     = "uksouth"
+}
+
+variable "principal_id" {
+  description = "Object ID of the principal running azd. azd supplies this from AZURE_PRINCIPAL_ID; standalone Terraform falls back to the Azure CLI principal."
+  type        = string
+  default     = ""
+}
+
+variable "subscription_id" {
+  description = "Optional subscription ID for azurerm v4. azd/CLI users can leave this null when ARM_SUBSCRIPTION_ID or Azure CLI context is set."
+  type        = string
+  default     = null
+}
+
+variable "tenant_id" {
+  description = "Optional tenant ID for azurerm/azapi. Leave null to use the Azure CLI tenant selected by az login."
+  type        = string
+  default     = null
 }
 
 variable "resource_group_name" {
-  description = "Resource group to deploy into. Created if create_resource_group is true."
+  description = "Optional override. By default the demo keeps azd's Bicep-era convention: rg-<environment_name>."
   type        = string
-  default     = null
+  default     = ""
 }
 
-variable "create_resource_group" {
-  description = "Set false in environments where the platform team pre-creates resource groups."
-  type        = bool
-  default     = true
+variable "app_service_plan_sku" {
+  description = "App Service Plan SKU. S1 or higher is required for the autoscale teaching chapter."
+  type        = string
+  default     = "S1"
 }
 
-variable "log_analytics_workspace_id" {
-  description = "Existing Log Analytics workspace resource ID for diagnostic settings. If null, one is created."
-  type        = string
-  default     = null
+variable "worker_count" {
+  description = "Number of App Service plan workers. Keep at 1 so the planted bottlenecks are visible until you scale deliberately."
+  type        = number
+  default     = 1
 }
 
 variable "load_test_contributor_principal_ids" {
-  description = "Entra ID object IDs (typically groups) granted Load Test Contributor. Least privilege: give groups, not users."
+  description = "Optional Entra ID object IDs, usually groups, granted Load Test Contributor on the Azure Load Testing resource."
   type        = list(string)
   default     = []
 }
 
-variable "monitoring_reader_scope_id" {
-  description = "Scope the load test identity gets Monitoring Reader on, so App Components can read server-side metrics. Defaults to the resource group. Set this to the resource group ID of the system under test if it lives elsewhere."
-  type        = string
-  default     = null
-}
-
-variable "key_vault_secrets_officer_principal_id" {
-  description = "Optional Entra ID object ID to receive Key Vault Secrets Officer on the demo vault. Defaults to the principal running Terraform."
-  type        = string
-  default     = null
-}
-
 variable "demo_api_key_value" {
-  description = "Optional fake demo credential written to Key Vault as demo-api-key. Override from a protected variable for real demos; do not commit real values."
+  description = "Fake demo credential stored as Key Vault secret demo-api-key. Override from protected automation for private demos; never commit real credentials."
   type        = string
-  default     = null
+  default     = "contoso-demo-api-key"
   sensitive   = true
 }
 
+variable "key_vault_public_network_access_enabled" {
+  description = "Intended Key Vault public network access. Some customer policies rewrite this to false after create; see main.tf before changing."
+  type        = bool
+  default     = true
+}
+
 variable "tags" {
-  description = "Tags applied to every resource. FSI customers will have mandatory tag policy - align these before you deploy."
+  description = "Business tags merged with azd-env-name and applied to every Azure resource."
   type        = map(string)
   default = {
-    workload           = "load-testing"
-    environment        = "demo"
-    dataClassification = "non-production"
-    managedBy          = "terraform"
+    workload   = "contoso-bank-loadtest-demo"
+    costCentre = "demo"
   }
 }

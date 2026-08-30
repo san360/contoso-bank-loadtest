@@ -2,7 +2,7 @@
 
 A complete, runnable demo kit for presenting **Azure Load Testing** to a financial services customer.
 
-It contains a documented session agenda, a purpose-built banking API with deliberately planted (and instantly removable) performance bottlenecks, seven load test definitions across three artefact styles, infrastructure as code, and a CI/CD pipeline.
+It contains a documented session agenda, a purpose-built banking API with deliberately planted (and instantly removable) performance bottlenecks, eight load test definitions across four artefact styles, infrastructure as code, and a CI/CD pipeline.
 
 ---
 
@@ -10,10 +10,10 @@ It contains a documented session agenda, a purpose-built banking API with delibe
 
 | Folder | Contents |
 |---|---|
-| [`docs/`](./docs) | The session agenda and presenter runbook — 17 documents, one per section |
+| [`docs/`](./docs) | The session agenda and presenter runbook — 19 numbered documents |
 | [`src/`](./src) | **Contoso Bank API** — the system under test |
-| [`loadtests/`](./loadtests) | JMeter, Locust and URL-based tests, plus YAML configs and test data |
-| [`infra/`](./infra) | Bicep (deployed via `azd`) and the equivalent Terraform |
+| [`loadtests/`](./loadtests) | JMeter, Locust, URL-based and cURL-based tests, plus YAML configs and test data |
+| [`infra/`](./infra) | Terraform IaC used by `azd up` |
 | [`.github/workflows/`](./.github/workflows) | GitHub Actions performance gate (OIDC, no stored secrets) |
 | [`tools/`](./tools) | `azd up` load-test provisioning hooks, [`e2e-test.ps1`](./tools/e2e-test.ps1) end-to-end validation, hostname retargeting, VUH costing, and the harness that proves the planted bottlenecks actually bite |
 
@@ -71,7 +71,7 @@ Measured improvement (see [`tools/validate_bottlenecks.py`](./tools/validate_bot
 
 ---
 
-## Seven test definitions, four demo flavours
+## Eight test definitions, four demo flavours
 
 The kit deliberately shows the same scenario several ways, because "how do we get started?" has different answers depending on who's asking. `azd up` creates all YAML definitions automatically.
 
@@ -80,6 +80,7 @@ The kit deliberately shows the same scenario several ways, because "how do we ge
 | **URL basic** | [`loadtests/config/url-basic.yaml`](./loadtests/config/url-basic.yaml) + URL JSON | Opening no-code demo: one endpoint, no script | 2 min |
 | **URL smoke** | [`loadtests/config/url-smoke.yaml`](./loadtests/config/url-smoke.yaml) + URL JSON | No-script multi-request smoke test with criteria | 3 min |
 | **URL cURL** | [`loadtests/config/url-curl.yaml`](./loadtests/config/url-curl.yaml) + cURL JSON | Bring existing runbook/Postman commands | 3 min |
+| **URL false green** | [`loadtests/config/url-false-green.yaml`](./loadtests/config/url-false-green.yaml) + URL JSON | Criteria-less 404 test that proves "Completed" can still mean 100% errors | 3 min |
 | **PR gate** | [`loadtests/config/pr-gate.yaml`](./loadtests/config/pr-gate.yaml) + JMeter | Cheap shift-left regression gate | 5 min |
 | **Peak load** | [`loadtests/config/peak-load.yaml`](./loadtests/config/peak-load.yaml) + JMeter | Headline 1,000-VU release/capacity test | 15 min run |
 | **Peak load (Locust)** | [`loadtests/config/peak-load-locust.yaml`](./loadtests/config/peak-load-locust.yaml) + Locust | Developer/Copilot-friendly equivalent | 15 min run |
@@ -112,12 +113,11 @@ Start with [`docs/00-agenda-and-runbook.md`](./docs/00-agenda-and-runbook.md).
 | 16 | [Reference repos, links and facts to verify](./docs/16-reference-repos-and-links.md) |
 | 17 | [Portal-free operations and LGTM/Grafana integration](./docs/17-portal-free-operations-and-observability.md) |
 | 18 | [**Deploy and first run — hands-on walkthrough**](./docs/18-deploy-and-first-run.md) |
+| 19 | [Recording walkthrough and test catalog](./docs/19-recording-and-test-catalog.md) |
 
-Sections 02, 07, 11, 12, 13, 14, 17 and 18 were added to the original agenda — see doc 00 for the rationale.
+Sections 02, 07, 11, 12, 13, 14, 17, 18 and 19 were added to the original agenda — see doc 00 for the rationale.
 
 > 🚀 **Deploying this for the first time? Start at [doc 18](./docs/18-deploy-and-first-run.md).** It takes you from `azd up` to a completed load test with a visible bottleneck, and lists the snags to expect.
-
-> ⚠️ [`docs/05-deployment-bicep-iac.md`](./docs/05-deployment-bicep-iac.md) is **superseded**. It is retained as Bicep reference material only; present from doc 05 above.
 
 ### Changed after customer review
 

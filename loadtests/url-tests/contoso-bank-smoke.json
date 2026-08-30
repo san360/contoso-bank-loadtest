@@ -7,7 +7,7 @@
           "requestName": "Health",
           "requestType": "URL",
           "method": "GET",
-          "endpoint": "https://app-loadtest-bxbs6q.azurewebsites.net/health",
+          "endpoint": "https://app-loadtest-27d2e5.azurewebsites.net/health",
           "queryParameters": [],
           "headers": {
             "Accept": "application/json"
@@ -18,7 +18,7 @@
           "requestName": "GetBalance",
           "requestType": "URL",
           "method": "GET",
-          "endpoint": "https://app-loadtest-bxbs6q.azurewebsites.net/api/accounts/ACC-1001/balance",
+          "endpoint": "https://app-loadtest-27d2e5.azurewebsites.net/api/accounts/ACC-1001/balance",
           "queryParameters": [],
           "headers": {
             "Accept": "application/json"
@@ -29,7 +29,7 @@
           "requestName": "GetTransactions",
           "requestType": "URL",
           "method": "GET",
-          "endpoint": "https://app-loadtest-bxbs6q.azurewebsites.net/api/accounts/ACC-1001/transactions",
+          "endpoint": "https://app-loadtest-27d2e5.azurewebsites.net/api/accounts/ACC-1001/transactions",
           "queryParameters": [
             {
               "key": "page_size",
@@ -45,7 +45,7 @@
           "requestName": "CreateTransfer",
           "requestType": "URL",
           "method": "POST",
-          "endpoint": "https://app-loadtest-bxbs6q.azurewebsites.net/api/transfers",
+          "endpoint": "https://app-loadtest-27d2e5.azurewebsites.net/api/transfers",
           "queryParameters": [],
           "headers": {
             "Content-Type": "application/json",
@@ -59,7 +59,7 @@
           "requestName": "GenerateStatement",
           "requestType": "URL",
           "method": "GET",
-          "endpoint": "https://app-loadtest-bxbs6q.azurewebsites.net/api/statements/ACC-1001",
+          "endpoint": "https://app-loadtest-27d2e5.azurewebsites.net/api/statements/ACC-1001",
           "queryParameters": [],
           "headers": {
             "Accept": "application/json"

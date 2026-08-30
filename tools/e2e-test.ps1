@@ -492,11 +492,36 @@ function Wait-TestRun {
       az load test-run create blocks by default, but we re-query afterwards so
       the script never depends on that behaviour, and so we can report both
       fields of the status taxonomy.
+
+      THE SETTLING RACE - observed empirically in this environment, and the
+      reason this function is more complicated than it looks.
+
+      `status` and `testResult` do NOT become final at the same instant. At the
+      moment `status` first flips to DONE, the pass/fail evaluation may still be
+      in flight, and `testResult` transiently reads NOT_APPLICABLE before
+      resolving to PASSED or FAILED a few seconds later.
+
+      That matters because NOT_APPLICABLE is overloaded. It legitimately means
+      "this test defines no failureCriteria, so it can never fail" - the false
+      green described in doc 07 §7.2. But it is ALSO what you see if you read
+      the field too early on a test that DOES have criteria and DID fail.
+
+      Anything that reads both fields from the same response that first reports
+      DONE will therefore occasionally report "no fail criteria defined" for a
+      genuine performance regression. That is the worst kind of bug in a quality
+      gate: it discredits the gate rather than the code.
+
+      So: once status is terminal, if testResult is NOT_APPLICABLE we re-query a
+      few times to let it settle. If it stays NOT_APPLICABLE, it is real.
     #>
     param([string]$RunId, [int]$TimeoutMinutes = 25)
 
     $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
     $terminal = @('DONE', 'FAILED', 'CANCELLED')
+
+    # How hard to try before accepting NOT_APPLICABLE as the settled truth.
+    $settleAttempts = 6
+    $settleDelaySec = 10
 
     while ((Get-Date) -lt $deadline) {
         $r = Invoke-Safe {
@@ -508,7 +533,28 @@ function Wait-TestRun {
             try {
                 $j = $r.Output | ConvertFrom-Json
                 if ($j.s -in $terminal) {
-                    return @{ Status = $j.s; Result = $j.t }
+                    $status = $j.s
+                    $result = $j.t
+
+                    for ($i = 1; $i -le $settleAttempts -and $result -eq 'NOT_APPLICABLE'; $i++) {
+                        Write-Host "      testResult=NOT_APPLICABLE - re-querying in case it has not settled ($i/$settleAttempts)..." -ForegroundColor DarkGray
+                        Start-Sleep -Seconds $settleDelaySec
+
+                        $again = Invoke-Safe {
+                            az load test-run show --load-test-resource $script:LoadTestName `
+                                --resource-group $script:ResourceGroup --test-run-id $RunId `
+                                --query "{s:status,t:testResult}" -o json
+                        }
+                        if ($again.Ok -and $again.Output) {
+                            try {
+                                $k = $again.Output | ConvertFrom-Json
+                                $status = $k.s
+                                $result = $k.t
+                            } catch { }
+                        }
+                    }
+
+                    return @{ Status = $status; Result = $result }
                 }
                 Write-Host "      $($j.s)..." -ForegroundColor DarkGray
             } catch { }
@@ -516,6 +562,38 @@ function Wait-TestRun {
         Start-Sleep -Seconds 20
     }
     return @{ Status = 'TIMEOUT'; Result = $null }
+}
+
+function Test-HasFailureCriteria {
+    <#
+      Race-free companion to Wait-TestRun.
+
+      A run's testResult can be ambiguous (see the settling race above), but the
+      TEST DEFINITION is static: either it declares pass/fail criteria or it does
+      not. Querying the definition is therefore the reliable way to tell the two
+      meanings of NOT_APPLICABLE apart:
+
+        criteria defined + NOT_APPLICABLE  -> evaluation had not settled, re-query
+        no criteria      + NOT_APPLICABLE  -> the real false green, fail the gate
+
+      Returns $true / $false, or $null if the definition could not be read.
+    #>
+    param([string]$TestId)
+
+    $r = Invoke-Safe {
+        az load test show --load-test-resource $script:LoadTestName `
+            --resource-group $script:ResourceGroup --test-id $TestId `
+            --query "passFailCriteria.passFailMetrics" -o json
+    }
+    if (-not ($r.Ok -and $r.Output)) { return $null }
+
+    try {
+        $metrics = $r.Output | ConvertFrom-Json
+        if ($null -eq $metrics) { return $false }
+        return (@($metrics.PSObject.Properties).Count -gt 0)
+    } catch {
+        return $null
+    }
 }
 
 function Invoke-Scenario {

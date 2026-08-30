@@ -6,7 +6,7 @@
 > - Terraform is the internally recommended IaC tool for this customer.
 > - **Portal interactions are not permitted in higher environments**, so a portal-free path is a gating requirement, not a preference.
 >
-> Bicep/AVM is retained as [Appendix A](#appendix-a--bicep--avm) — it is still the Microsoft-native option and some platform teams standardise on it.
+> The old Bicep-only appendix has been removed from this repo. This kit is now **Terraform-only**. If a customer asks about Bicep/AVM, frame it as an external platform option, not as an artefact this repo ships.
 
 **Duration:** 15–20 minutes · **Format:** Code walkthrough (VS Code) + live terminal · **Audience:** Platform engineering, cloud governance, security
 
@@ -213,58 +213,18 @@ Rather than arguing about whether the portal is allowed, show that the product f
 
 ---
 
-## Appendix A — Bicep / AVM
+## Appendix A — If the customer asks about Bicep / AVM
 
-Retained because it is Microsoft-native, because the AVM Bicep module **is** published and GA-quality, and because `azd up` uses it to stand up this entire demo (app under test included) in one command.
+Be explicit: this repository no longer contains Bicep. The migration is complete and `azd up` uses Terraform from [`../infra`](../infra).
 
-### The AVM module
+Bicep is still a valid Azure-native option for platform teams that standardise on it, and the Azure Verified Modules registry includes an Azure Load Testing module. Treat that as an external reference pattern, not as the implementation in this kit.
 
-```bicep
-module loadTest 'br/public:avm/res/load-test-service/load-test:<version>' = {
-  name: 'loadTestDeployment'
-  params: {
-    name: loadTestName
-    location: location
-    tags: tags
-    managedIdentities: { systemAssigned: true }
-    roleAssignments: [
-      {
-        principalId: performanceTeamGroupObjectId
-        roleDefinitionIdOrName: 'Load Test Contributor'
-        principalType: 'Group'
-      }
-    ]
-    diagnosticSettings: [ { workspaceResourceId: logAnalyticsWorkspaceId } ]
-    customerManagedKey: {
-      keyName: cmkKeyName
-      keyVaultResourceId: keyVault.id
-      userAssignedIdentityResourceId: userAssignedIdentity.id
-    }
-    lock: { kind: 'CanNotDelete' }
-  }
-}
-```
-
-Repo: `Azure/bicep-registry-modules` → `avm/res/load-test-service/load-test`. **Always pin a version.**
-
-### The demo's own Bicep
-
-Walk [`../infra`](../infra) in this order:
-
-1. **`main.bicep`** — subscription-scope entry point; creates the RG, wires the modules.
-2. **`core/monitoring.bicep`** — Log Analytics + Application Insights. *"Observability first — the load test is only half the picture."*
-3. **`core/host.bicep`** — App Service plan + Contoso Bank API. Note the deliberately modest SKU, so the bottleneck is reachable in a demo.
-4. **`core/loadtest.bicep`** — the load testing resource with a system-assigned identity.
-5. **`core/rbac.bicep`** — the Monitoring Reader assignment. *The step everyone forgets.*
-
-```bash
-azd auth login
-azd up
-# ... run the demo ...
-azd down --purge --force
-```
-
-> **Presenter tip:** don't run a full `azd up` live — it takes minutes and adds risk. Deploy *just* the load testing resource live (fast), and have the full environment pre-deployed.
+| Point to make | Why it matters |
+|---|---|
+| **Always pin module versions** | Change control and reproducibility. |
+| **Managed identity + RBAC are not optional** | Server-side metrics and Key Vault secret resolution depend on them. |
+| **Diagnostics, tags, locks and CMK belong in platform IaC** | These are governed-resource concerns, not per-test concerns. |
+| **Test definitions are still data-plane YAML** | Even with Bicep, tests are created by `az load`, not by the resource module. |
 
 ---
 
