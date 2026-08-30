@@ -55,15 +55,6 @@ crash.*.log
 !*.tfvars.example
 
 # -----------------------------------------------------------------------------
-# Bicep / ARM generated output
-# -----------------------------------------------------------------------------
-# Keep the authored .bicep files in git, but leave generated ARM JSON out so it
-# can be rebuilt from source when needed.
-infra/main.json
-infra/*.parameters.json
-*.bicep.json
-
-# -----------------------------------------------------------------------------
 # Secrets, certificates and local environment overrides
 # -----------------------------------------------------------------------------
 *.env

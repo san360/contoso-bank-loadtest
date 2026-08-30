@@ -44,7 +44,7 @@ Azure Load Testing reports **two independent outcomes** for every run. Almost ev
 | "**Error**" | `FAILED` / `VALIDATION_FAILURE` | — | Engine, script or configuration failure. **Your test is broken, not your app.** No performance conclusion is available | Fix the test. Check engine health, JMX validity, secrets, network reachability |
 | "**Failed**" | `DONE` | `FAILED` | Ran cleanly, **breached a fail criterion**. This is a *successful test* that found a *real problem* | Investigate the app. This is the outcome you want your gate to produce |
 | "**Completed**" ✅ | `DONE` | `PASSED` | Ran cleanly, met every criterion. A genuine pass | Baseline it |
-| "**Completed**" 🚨 | `DONE` | `NOT_APPLICABLE` | **No fail criteria were defined.** The run is green because nothing was asked of it — *including runs where 100% of requests failed* | **Never accept this.** Add criteria and re-run |
+| "**Completed**" 🚨 | `DONE` | `NOT_APPLICABLE` | **Usually: no fail criteria were defined.** The run is green because nothing was asked of it — *including runs where 100% of requests failed*. But see §7.2.4: it can also mean the aggregate simply hasn't settled yet | Check the run's `passFailMetrics`. Empty → **never accept this**, add criteria and re-run. Non-empty → read each criterion's own `result` |
 
 > ### 🚨 The silent-failure trap — say this out loud in the session
 >
@@ -66,17 +66,56 @@ graph TD
     B -->|"DONE"| E{"testResult?"}
     E -->|"PASSED"| F["Genuine pass.<br/>Baseline it"]
     E -->|"FAILED"| G["Genuine finding.<br/>Investigate the app"]
-    E -->|"NOT_APPLICABLE"| H["FALSE GREEN<br/>No criteria defined"]
+    E -->|"NOT_APPLICABLE"| N{"Does the run carry<br/>passFailMetrics?"}
+    N -->|"No / null"| H["FALSE GREEN<br/>No criteria defined"]
+    N -->|"Yes"| I["Aggregate has not settled.<br/>Read each criterion's own result"]
     H --> H1["Tells you nothing.<br/>Could be 100% errors.<br/>Add criteria, re-run"]
+    I --> I1["Any result = failed -> FAILED<br/>otherwise PASSED"]
 ```
 
-### 7.2.4 The standard to recommend
+### 7.2.4 `testResult` lags — measured, not theorised
+
+The decision tree above has one extra branch for a reason. **`status` and `testResult` do not become final at the same instant**, and the gap is far wider than the "wait a few seconds" advice usually given.
+
+Measured in this kit, on run `verify-cutover-20260830-163946` (`contoso-bank-url-smoke`, 2 criteria):
+
+| Moment | `status` | `testResult` | `passFailCriteria.passFailMetrics` |
+|---|---|---|---|
+| First response where status is terminal | `DONE` | `NOT_APPLICABLE` | `avg(response_time_ms)` **already** marked `"failed"` — actual `3978` vs `> 500` |
+| Still >60 seconds later | `DONE` | `NOT_APPLICABLE` | unchanged, still correct |
+| Minutes later | `DONE` | `FAILED` | unchanged, still correct |
+
+Two conclusions, both of which shape how this kit is built:
+
+1. **The per-criterion results are correct and complete as soon as the run finishes.** The aggregate is derived afterwards and is merely advisory.
+2. **Any gate that polls `testResult` on a bounded retry budget will eventually emit a false green** — the precise failure mode §6.4a exists to teach, reintroduced by the very code meant to catch it.
+
+So the rule for automation is:
+
+> **Derive the verdict from `passFailCriteria.passFailMetrics[*].result`, never from `testResult`.**
+>
+> - any criterion `failed` → **FAILED**
+> - criteria exist, none failed → **PASSED**
+> - no criteria at all → **NOT_APPLICABLE**, and *that* is the real false green
+
+Only the third case is a genuine `NOT_APPLICABLE`. This is exactly what [`.github/workflows/loadtest.yml`](../.github/workflows/loadtest.yml) and [`tools/e2e-test.ps1`](../tools/e2e-test.ps1) implement — see [doc 08 §8.6a](08-cicd-integration.md).
+
+```bash
+# The reliable query. Note: on the RUN, not the test definition.
+az load test-run show --test-run-id "$RUN_ID" \
+  --load-test-resource "$ALT" --resource-group "$RG" \
+  --query "passFailCriteria.passFailMetrics" -o json
+```
+
+`e2e-test.ps1` deliberately prints the disagreement rather than waiting it out — the moment where the aggregate says `NOT_APPLICABLE` while the criteria already say `FAILED` is the most persuasive thirty seconds in the whole demo.
+
+### 7.2.5 The standard to recommend
 
 > **Every test defines at least one error-percentage criterion.**
 >
 > This single rule makes `NOT_APPLICABLE` structurally impossible. It is trivially enforceable in code review, and it converts a silent failure mode into a loud one. See §7.8 for the syntax, and doc [`08-cicd-integration.md`](08-cicd-integration.md) for the pipeline guard that enforces it automatically.
 
-### 7.2.5 Then validate the test itself
+### 7.2.6 Then validate the test itself
 
 Never analyse a result you haven't sanity-checked. Cover:
 

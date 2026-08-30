@@ -123,7 +123,10 @@ azure-load-test/
 │   ├── set_target_host.py     ← manual repair helper for the same retargeting
 │   ├── vuh_calculator.py      ← cost estimates with the customer's rate card
 │   └── validate_bottlenecks.py
-├── .github/workflows/load-test.yml
+├── .github/workflows/
+│   ├── infra-ci.yml           ← terraform fmt/validate + pre-flight guard
+│   ├── deploy.yml             ← manual azd provision/deploy
+│   └── loadtest.yml           ← the headline gate
 └── docs/                      ← the session material (00 is the runbook)
 ```
 
@@ -325,7 +328,7 @@ It runs four load tests that deliberately produce four *different* outcomes — 
 | **100% errors, no criteria** | `DONE` / `NOT_APPLICABLE` | 🚨 **The false green.** Every request failed and the run still doesn't report failure |
 | 60% errors, AutoStop at 20% | `CANCELLED` | Abort criteria cut the run short and stopped burning VUH |
 
-The third row is worth pausing on in the session. It is the strongest argument for the pre-flight guard in [`.github/workflows/load-test.yml`](../.github/workflows/load-test.yml), which refuses to run any config that defines no `failureCriteria`.
+The third row is worth pausing on in the session. It is the strongest argument for the pre-flight guard in [`.github/workflows/loadtest.yml`](../.github/workflows/loadtest.yml), which refuses to run any config that defines no `failureCriteria` unless it is one of the two intentional teaching artefacts.
 
 > **Capture the AutoStop result.** [Doc 07 §7.9](07-analyzing-results-and-bottlenecks.md) currently records the `testResult` of an auto-stopped run as *unverified*, because it could not be confirmed from documentation alone. Phase 4d prints it. Please paste the observed value back into doc 07 §7.9 so the kit stops carrying an open question.
 
@@ -505,7 +508,7 @@ azd down --purge --force    # tears everything down
 | **Server-side metrics chart empty** | Missing Monitoring Reader, or no App Components | Verify: `az role assignment list --assignee <alt-principal-id> -o table`. See §18.6 |
 | Test runs but 100% errors | **Hostname not retargeted** | Re-run §18.5. Check the Errors tab for DNS/404 |
 | `az load` not recognised | Extension missing outside the hook | `az extension add --name load` |
-| `testResult: NOT_APPLICABLE` | Either the config genuinely has no `failureCriteria`, **or** you read the field before the pass/fail evaluation settled | Re-query after ~10s. If it still says `NOT_APPLICABLE`, check the test definition: `az load test show ... --query passFailCriteria.passFailMetrics`. Empty means the criteria really are missing. See doc 07 §7.2 |
+| `testResult: NOT_APPLICABLE` | Either the config genuinely has no `failureCriteria`, **or** you read the aggregate before it settled — it can lag `status: DONE` by **over a minute** | Don't wait on it. Read the per-criterion results, which are already correct: `az load test-run show ... --query passFailCriteria.passFailMetrics`. Empty/`null` means the criteria really are missing; otherwise each entry carries its own `result`. See doc 07 §7.2 and doc 08 §8.6a |
 | Region rejects the ALT resource | Not available in that region | Pick another region and re-run `azd up` |
 | Bottleneck isn't visible | App scaled out, or already `optimized` | Confirm plan capacity is 1; `GET /admin/config` |
 

@@ -306,7 +306,7 @@ That's wrong in one direction and dangerously incomplete in another:
 | `DONE` + `PASSED` | pass ✅ | pass ✅ |
 | `DONE` + `FAILED` | fail ✅ | fail — **real regression** ✅ |
 | `DONE` + `NOT_APPLICABLE`, no criteria | fail, with a confusing message | pass as **informational only** for the two named teaching artefacts |
-| `DONE` + `NOT_APPLICABLE`, criteria exist | maybe pass, maybe fail, usually ambiguous | fail — **pass/fail evaluation did not settle** |
+| `DONE` + `NOT_APPLICABLE`, criteria exist | maybe pass, maybe fail, usually ambiguous | **ignore the aggregate and read the criteria** — they are already correct |
 | `FAILED` / `VALIDATION_FAILURE` | fail, indistinguishable from a regression | fail — **the test broke, not necessarily the app** |
 | `CANCELLED` (AutoStop fired) | fail, indistinguishable | fail — **run aborted, no conclusion** |
 
@@ -342,30 +342,35 @@ for attempt in 1 2 3 4 5 6; do
     --query "testResult" -o tsv)
 done
 
-if [ "$result" = "NOT_APPLICABLE" ]; then
-  criteria_count=$(az load test show \
-    --test-id "$TEST_ID" \
-    --load-test-resource "$LOAD_TEST_RESOURCE" \
-    --resource-group "$RESOURCE_GROUP" \
-    --query "length(keys(passFailCriteria.passFailMetrics || \`{}\`))" \
-    -o tsv)
+# The verdict comes from the per-criterion results, not the aggregate.
+criteria_json=$(az load test-run show \
+  --load-test-resource "$LOAD_TEST_RESOURCE" \
+  --resource-group "$RESOURCE_GROUP" \
+  --test-run-id "$RUN_ID" \
+  --query "passFailCriteria.passFailMetrics" -o json) || criteria_json=""
+[ -n "$criteria_json" ] || criteria_json="null"
 
-  if [ "${criteria_count:-0}" -eq 0 ]; then
-    echo "::notice title=Criteria-less teaching artefact::$TEST_ID is informational only."
-    exit 0
-  fi
+criteria_total=$(printf '%s' "$criteria_json" \
+  | jq 'if . == null then 0 else (to_entries | length) end')
+criteria_failed=$(printf '%s' "$criteria_json" \
+  | jq '[ (. // {}) | to_entries[] | select(.value.result == "failed") ] | length')
 
-  echo "::error title=Pass/fail evaluation unresolved::$TEST_ID defines $criteria_count criteria."
+if [ "$criteria_total" -eq 0 ]; then
+  echo "::notice title=Criteria-less teaching artefact::$TEST_ID is informational only."
+  exit 0
+fi
+
+if [ "$criteria_failed" -gt 0 ]; then
+  echo "::error title=Performance regression::$criteria_failed of $criteria_total criteria breached."
   exit 1
 fi
 
-if [ "$result" != "PASSED" ]; then
-  echo "::error title=Performance regression::Fail criteria breached."
-  exit 1
-fi
+echo "Load test passed with $criteria_total criteria enforced."
 ```
 
-> **Why the retry loop exists.** `status` and `testResult` are populated independently. Reading both from the first response where `status == DONE` is a race: `testResult` can still read `NOT_APPLICABLE` for several seconds on a test that *does* define criteria and *did* fail. This was observed empirically while building this kit — a run that finally reported `FAILED` at `avg 3588 ms` against a `> 500 ms` criterion read `NOT_APPLICABLE` moments earlier. Because `NOT_APPLICABLE` is overloaded, the guard re-polls, then settles the ambiguity against the static test definition, which cannot race.
+> **Why the gate reads the criteria, not `testResult`.** `status` and `testResult` are populated independently, and the aggregate lags — by far longer than is safe to wait on. Measured on run `verify-cutover-20260830-163946` in this very kit: `status` reached `DONE` while `testResult` read `NOT_APPLICABLE`, and it **stayed `NOT_APPLICABLE` for more than 60 seconds** before settling to `FAILED`. In that same first `DONE` response, `passFailCriteria.passFailMetrics` **already** reported `avg(response_time_ms) = 3978 > 500` as `"failed"`. So the per-criterion results are correct and complete when the run finishes; the aggregate is merely advisory. A gate that polls `testResult` on any bounded retry budget will eventually emit a **false green** — the exact failure mode §6.4a exists to teach. The retry loop above is kept only to make the log line accurate; nothing branches on its outcome.
+>
+> This also makes the third outcome collapse cleanly: "criteria exist but the aggregate has not settled" is no longer a distinct case to fail on, because the criteria are readable regardless. Only a genuinely criteria-less test yields `NOT_APPLICABLE` as a *real* answer.
 
 ### Shift it further left — catch it before the test even runs
 

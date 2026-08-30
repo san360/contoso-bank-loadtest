@@ -269,7 +269,7 @@ azure-load-test/
 │   └── url-tests/contoso-bank-smoke.json
 ├── tools/
 │   └── validate_bottlenecks.py      # proves the bottlenecks actually bite
-├── .github/workflows/load-test.yml  # OIDC, PR gate + nightly
+├── .github/workflows/loadtest.yml   # OIDC, push gate + manual dispatch
 └── docs/                            # this documentation set
 ```
 

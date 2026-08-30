@@ -498,36 +498,47 @@ function Wait-TestRun {
 
       `status` and `testResult` do NOT become final at the same instant. At the
       moment `status` first flips to DONE, the pass/fail evaluation may still be
-      in flight, and `testResult` transiently reads NOT_APPLICABLE before
-      resolving to PASSED or FAILED a few seconds later.
+      in flight, and `testResult` reads NOT_APPLICABLE before resolving to
+      PASSED or FAILED.
 
       That matters because NOT_APPLICABLE is overloaded. It legitimately means
       "this test defines no failureCriteria, so it can never fail" - the false
       green described in doc 07 §7.2. But it is ALSO what you see if you read
       the field too early on a test that DOES have criteria and DID fail.
 
-      Anything that reads both fields from the same response that first reports
-      DONE will therefore occasionally report "no fail criteria defined" for a
-      genuine performance regression. That is the worst kind of bug in a quality
-      gate: it discredits the gate rather than the code.
+      MEASURED, not assumed: on run verify-cutover-20260830-163946
+      (contoso-bank-url-smoke, 2 criteria) testResult was still NOT_APPLICABLE
+      more than 60 seconds after status reached DONE, and only later settled to
+      FAILED. A short retry loop is therefore NOT sufficient on its own.
 
-      So: once status is terminal, if testResult is NOT_APPLICABLE we re-query a
-      few times to let it settle. If it stays NOT_APPLICABLE, it is real.
+      The reliable signal is passFailCriteria.passFailMetrics[*].result on the
+      RUN. In that same run those per-criterion results were already correct and
+      complete at the first DONE response - avg(response_time_ms) 3978 > 500 was
+      already marked "failed" while the aggregate testResult still said
+      NOT_APPLICABLE. So we derive the verdict from the criteria and treat
+      testResult as advisory.
+
+      Precedence used below:
+        any criterion failed            -> FAILED
+        criteria exist, none failed     -> PASSED
+        no criteria at all              -> NOT_APPLICABLE (the real false green)
+
+      We deliberately do NOT re-poll waiting for testResult to agree. Doing so
+      would cost up to a minute per scenario for a purely cosmetic field, and it
+      would erase the most instructive artefact this script produces: the moment
+      where the aggregate still says NOT_APPLICABLE while the criteria already
+      say FAILED. We report both and let the disagreement stand.
     #>
     param([string]$RunId, [int]$TimeoutMinutes = 25)
 
     $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
     $terminal = @('DONE', 'FAILED', 'CANCELLED')
 
-    # How hard to try before accepting NOT_APPLICABLE as the settled truth.
-    $settleAttempts = 6
-    $settleDelaySec = 10
-
     while ((Get-Date) -lt $deadline) {
         $r = Invoke-Safe {
             az load test-run show --load-test-resource $script:LoadTestName `
                 --resource-group $script:ResourceGroup --test-run-id $RunId `
-                --query "{s:status,t:testResult}" -o json
+                --query "{s:status,t:testResult,c:passFailCriteria.passFailMetrics}" -o json
         }
         if ($r.Ok -and $r.Output) {
             try {
@@ -535,65 +546,45 @@ function Wait-TestRun {
                 if ($j.s -in $terminal) {
                     $status = $j.s
                     $result = $j.t
+                    $criteria = $j.c
 
-                    for ($i = 1; $i -le $settleAttempts -and $result -eq 'NOT_APPLICABLE'; $i++) {
-                        Write-Host "      testResult=NOT_APPLICABLE - re-querying in case it has not settled ($i/$settleAttempts)..." -ForegroundColor DarkGray
-                        Start-Sleep -Seconds $settleDelaySec
+                    $props = @()
+                    if ($criteria) { $props = @($criteria.PSObject.Properties) }
+                    $failedCount = @($props | Where-Object { $_.Value.result -eq 'failed' }).Count
 
-                        $again = Invoke-Safe {
-                            az load test-run show --load-test-resource $script:LoadTestName `
-                                --resource-group $script:ResourceGroup --test-run-id $RunId `
-                                --query "{s:status,t:testResult}" -o json
-                        }
-                        if ($again.Ok -and $again.Output) {
-                            try {
-                                $k = $again.Output | ConvertFrom-Json
-                                $status = $k.s
-                                $result = $k.t
-                            } catch { }
-                        }
+                    if ($props.Count -eq 0) {
+                        $derived = 'NOT_APPLICABLE'
+                    }
+                    elseif ($failedCount -gt 0) {
+                        $derived = 'FAILED'
+                    }
+                    else {
+                        $derived = 'PASSED'
                     }
 
-                    return @{ Status = $status; Result = $result }
+                    if ($result -cne $derived) {
+                        Write-Host "      NOTE: testResult reports '$result' but $($props.Count) criterion/criteria already say '$derived' - trusting the criteria." -ForegroundColor Yellow
+                        Write-Host "            This is the settling lag described in doc 07 section 7.2. It is why the CI gate reads the criteria." -ForegroundColor DarkGray
+                    }
+
+                    foreach ($p in ($props | Where-Object { $_.Value.result -eq 'failed' })) {
+                        Write-Host "      breached: $($p.Value.aggregate)($($p.Value.clientMetric)) $($p.Value.condition) $($p.Value.value) - actual $($p.Value.actualValue)" -ForegroundColor Red
+                    }
+
+                    return @{
+                        Status         = $status
+                        Result         = $derived
+                        ReportedResult = $result
+                        CriteriaCount  = $props.Count
+                        FailedCount    = $failedCount
+                    }
                 }
                 Write-Host "      $($j.s)..." -ForegroundColor DarkGray
             } catch { }
         }
         Start-Sleep -Seconds 20
     }
-    return @{ Status = 'TIMEOUT'; Result = $null }
-}
-
-function Test-HasFailureCriteria {
-    <#
-      Race-free companion to Wait-TestRun.
-
-      A run's testResult can be ambiguous (see the settling race above), but the
-      TEST DEFINITION is static: either it declares pass/fail criteria or it does
-      not. Querying the definition is therefore the reliable way to tell the two
-      meanings of NOT_APPLICABLE apart:
-
-        criteria defined + NOT_APPLICABLE  -> evaluation had not settled, re-query
-        no criteria      + NOT_APPLICABLE  -> the real false green, fail the gate
-
-      Returns $true / $false, or $null if the definition could not be read.
-    #>
-    param([string]$TestId)
-
-    $r = Invoke-Safe {
-        az load test show --load-test-resource $script:LoadTestName `
-            --resource-group $script:ResourceGroup --test-id $TestId `
-            --query "passFailCriteria.passFailMetrics" -o json
-    }
-    if (-not ($r.Ok -and $r.Output)) { return $null }
-
-    try {
-        $metrics = $r.Output | ConvertFrom-Json
-        if ($null -eq $metrics) { return $false }
-        return (@($metrics.PSObject.Properties).Count -gt 0)
-    } catch {
-        return $null
-    }
+    return @{ Status = 'TIMEOUT'; Result = $null; ReportedResult = $null; CriteriaCount = 0; FailedCount = 0 }
 }
 
 function Invoke-Scenario {
@@ -659,7 +650,10 @@ function Invoke-Scenario {
 
     $statusOk = ($outcome.Status -eq $ExpectStatus)
     $resultOk = ([string]::IsNullOrEmpty($ExpectResult)) -or ($outcome.Result -eq $ExpectResult)
-    $detail = "status=$($outcome.Status) testResult=$($outcome.Result)"
+    $detail = "status=$($outcome.Status) result=$($outcome.Result) criteria=$($outcome.FailedCount)/$($outcome.CriteriaCount) failed"
+    if ($outcome.ReportedResult -cne $outcome.Result) {
+        $detail += " (testResult still reported '$($outcome.ReportedResult)')"
+    }
 
     Add-Result '4' $Name $(if ($statusOk -and $resultOk) { 'PASS' } else { 'FAIL' }) $detail
 }
