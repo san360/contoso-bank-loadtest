@@ -1,0 +1,53 @@
+### Contoso Bank API — request collection
+### Used by the VS Code Azure Load Testing extension + GitHub Copilot (docs 09 & 10)
+### to generate a Locust script from an artefact the API team already maintains.
+
+@baseUrl = http://localhost:8000
+@accountId = ACC-1001
+@targetAccountId = ACC-1002
+
+### Health probe
+GET {{baseUrl}}/health
+
+### Current demo configuration
+GET {{baseUrl}}/admin/config
+
+### 1. Balance enquiry — highest volume journey in retail banking
+GET {{baseUrl}}/api/accounts/{{accountId}}/balance
+X-Correlation-Id: demo-balance-001
+
+### 2. Transaction history
+GET {{baseUrl}}/api/accounts/{{accountId}}/transactions?page_size=20
+X-Correlation-Id: demo-history-001
+
+### 3. Payment initiation — the critical write path
+POST {{baseUrl}}/api/transfers
+Content-Type: application/json
+X-Correlation-Id: demo-transfer-001
+
+{
+  "from_account": "{{accountId}}",
+  "to_account": "{{targetAccountId}}",
+  "amount_minor": 2500,
+  "currency": "GBP",
+  "reference": "Monthly standing order"
+}
+
+### 4. Statement generation — heavy reporting endpoint
+GET {{baseUrl}}/api/statements/{{accountId}}?months=3
+X-Correlation-Id: demo-statement-001
+
+### Switch to the bottlenecked configuration (demo "before")
+POST {{baseUrl}}/admin/config
+Content-Type: application/json
+
+{ "preset": "bottlenecked" }
+
+### Switch to the optimised configuration (demo "after")
+POST {{baseUrl}}/admin/config
+Content-Type: application/json
+
+{ "preset": "optimized" }
+
+### Reset seed data and counters between test runs
+POST {{baseUrl}}/admin/reset

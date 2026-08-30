@@ -1,0 +1,30 @@
+{
+  "version": "1.0",
+  "scenarios": {
+    "requestGroup1": {
+      "requests": [
+        {
+          "requestName": "Always404FalseGreen",
+          "requestType": "URL",
+          "method": "GET",
+          "endpoint": "https://app-loadtest-bxbs6q.azurewebsites.net/api/false-green-404",
+          "queryParameters": [],
+          "headers": {
+            "Accept": "application/json"
+          },
+          "responseVariables": []
+        }
+      ],
+      "csvDataSetConfigList": []
+    }
+  },
+  "testSetup": [
+    {
+      "scenario": "requestGroup1",
+      "loadType": "Linear",
+      "virtualUsersPerEngine": 10,
+      "rampUpTimeInSeconds": 10,
+      "durationInSeconds": 60
+    }
+  ]
+}

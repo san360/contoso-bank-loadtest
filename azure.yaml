@@ -1,0 +1,52 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+
+# =============================================================================
+# Contoso Bank - Azure Load Testing demo
+# =============================================================================
+# One command to stand the whole thing up:
+#
+#   azd auth login
+#   azd up
+#
+# That provisions Log Analytics, Application Insights, an App Service plan, the
+# Python API under test, the Azure Load Testing resource, and the Monitoring
+# Reader role assignment - then deploys the app and creates the load test
+# definitions from loadtests/config/*.yaml.
+#
+# No Docker and no local Python toolchain required: App Service builds the app
+# remotely with Oryx (SCM_DO_BUILD_DURING_DEPLOYMENT=true in host.bicep), and
+# the post-deploy hook has a PowerShell / POSIX fallback if Python is absent.
+# =============================================================================
+
+name: contoso-bank-loadtest
+metadata:
+  template: contoso-bank-loadtest@1.0.0
+
+infra:
+  provider: bicep
+  path: infra
+  module: main
+
+services:
+  api:
+    project: ./src
+    language: py
+    host: appservice
+
+# The test definitions reference the deployed app's generated hostname. Use a
+# postdeploy hook, not postprovision: the Load Testing resource exists after
+# provision, but the target app is not guaranteed to be live until deploy ends.
+# continueOnError stays false on purpose. A working app with an empty Tests blade
+# is the failed demo state this hook exists to prevent, so azd should surface it.
+hooks:
+  postdeploy:
+    windows:
+      shell: pwsh
+      run: ./tools/provision_loadtests.ps1
+      continueOnError: false
+      interactive: false
+    posix:
+      shell: sh
+      run: ./tools/provision_loadtests.sh
+      continueOnError: false
+      interactive: false

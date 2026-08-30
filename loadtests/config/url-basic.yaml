@@ -1,0 +1,47 @@
+# =============================================================================
+# Contoso Bank - URL BASIC (opening no-code demo)
+# =============================================================================
+# The very first "I have never written a load test" moment: a QA analyst or
+# product owner pastes one API URL into the portal, sets 50 virtual users, and
+# presses Create. Time to first load test is minutes, not weeks.
+#
+# This file is the safety-net version of that portal walkthrough, kept as code so
+# the demo can be recreated exactly if the presenter needs it.
+#
+#   1 engine x 50 VUs, 30s ramp, 3 min duration.
+#
+# Engines usually spend 1-2 minutes provisioning. A 30s ramp then makes the VU
+# chart visibly move while you narrate, and a 3 minute steady window leaves enough
+# live data on the dashboard inside the ≈6 minute opening slot.
+#
+# Note the load profile (virtual users, ramp, duration) lives in the requests
+# JSON `testSetup` block, NOT here - that is specific to URL-based tests.
+#
+# Run it:
+#   az load test create \
+#     --load-test-resource $ALT_RESOURCE --resource-group $RG \
+#     --test-id contoso-bank-url-basic \
+#     --load-test-config-file loadtests/config/url-basic.yaml
+# =============================================================================
+
+version: v0.1
+
+testId: contoso-bank-url-basic
+displayName: Contoso Bank - URL Basic No-Code Demo
+description: One-request URL test for the opening no-code Azure Load Testing demo.
+
+testType: URL
+testPlan: ../url-tests/contoso-bank-basic.json
+
+engineInstances: 1
+splitAllCSVs: false
+
+# Intentionally no failureCriteria.
+# Doc 06 §6.1 says to leave everything else default, and doc 07 §7.2 uses the
+# resulting criteria-less "Completed / NOT_APPLICABLE" run as a teaching point:
+# green infrastructure status is not the same thing as an application SLO pass.
+# Do not "fix" this demo by adding criteria here; use url-smoke.yaml instead.
+
+autoStop:
+  errorPercentage: 90
+  timeWindow: 60

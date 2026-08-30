@@ -1,0 +1,47 @@
+# =============================================================================
+# Contoso Bank - URL CURL (no script at all)
+# =============================================================================
+# Same URL-test ramp as url-smoke.yaml, but this time each request is expressed
+# as a cURL command instead of endpoint/method/header/body fields.
+#
+# Use this flavour for teams that already have working commands in runbooks,
+# Postman exports, or browser "Copy as cURL". They can turn those commands into
+# a load test without learning JMeter, Locust, or even the structured URL JSON.
+# Azure Load Testing still generates the JMeter plan for you afterwards.
+#
+#   1 engine x 50 VUs, 30s ramp, 3 min duration -> 2.5 VUH raw.
+#
+# Note the load profile (virtual users, ramp, duration) lives in the requests
+# JSON `testSetup` block, NOT here - that is specific to URL-based tests.
+#
+# Limitation to be honest about: URL tests handle static request sequences and
+# a maximum of five requests. The correlated transfer flow (create transfer ->
+# read its status by id) needs the JMX or Locust flavour.
+#
+# Run it:
+#   az load test create \
+#     --load-test-resource $ALT_RESOURCE --resource-group $RG \
+#     --test-id contoso-bank-url-curl \
+#     --load-test-config-file loadtests/config/url-curl.yaml
+# =============================================================================
+
+version: v0.1
+
+testId: contoso-bank-url-curl
+displayName: Contoso Bank - URL cURL
+description: Five-request URL test defined from cURL commands instead of a script.
+
+testType: URL
+testPlan: ../url-tests/contoso-bank-curl.json
+
+engineInstances: 1
+splitAllCSVs: false
+
+failureCriteria:
+  clientMetrics:
+    - avg(response_time_ms) > 500
+    - percentage(error) > 5
+
+autoStop:
+  errorPercentage: 90
+  timeWindow: 60

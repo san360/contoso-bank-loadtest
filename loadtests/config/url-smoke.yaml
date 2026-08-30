@@ -1,0 +1,46 @@
+# =============================================================================
+# Contoso Bank - URL SMOKE (no script at all)
+# =============================================================================
+# The "UI" demo flavour, expressed as code so it can also run in CI.
+#
+# Azure Load Testing generates the JMeter plan for you from the request list in
+# ../url-tests/contoso-bank-smoke.json. You can download that generated
+# JMX afterwards - which is the real point of this flavour. It is not a toy; it
+# is a ramp onto the scripted flavours.
+#
+#   1 engine x 50 VUs, 30s ramp, 3 min duration -> 2.5 VUH raw.
+#
+# Note the load profile (virtual users, ramp, duration) lives in the requests
+# JSON `testSetup` block, NOT here - that is specific to URL-based tests.
+#
+# Limitation to be honest about: URL tests handle static request sequences and
+# a maximum of five requests. The correlated transfer flow (create transfer ->
+# read its status by id) needs the JMX or Locust flavour.
+#
+# Run it:
+#   az load test create \
+#     --load-test-resource $ALT_RESOURCE --resource-group $RG \
+#     --test-id contoso-bank-url-smoke \
+#     --load-test-config-file loadtests/config/url-smoke.yaml
+# =============================================================================
+
+version: v0.1
+
+testId: contoso-bank-url-smoke
+displayName: Contoso Bank - URL Smoke
+description: Five-request smoke test defined without any load testing script.
+
+testType: URL
+testPlan: ../url-tests/contoso-bank-smoke.json
+
+engineInstances: 1
+splitAllCSVs: false
+
+failureCriteria:
+  clientMetrics:
+    - avg(response_time_ms) > 500
+    - percentage(error) > 5
+
+autoStop:
+  errorPercentage: 90
+  timeWindow: 60

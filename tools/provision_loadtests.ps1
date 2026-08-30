@@ -1,0 +1,459 @@
+<#
+.SYNOPSIS
+    Creates the Contoso Bank Azure Load Testing definitions after deployment.
+
+.DESCRIPTION
+    `azd up` should leave the customer with a live app AND a populated Load
+    Testing resource. This hook runs after deploy, retargets the versioned test
+    artefacts to the generated App Service hostname, then creates or updates
+    every YAML test definition under loadtests/config.
+
+    It deliberately does not start a test run. Creating definitions is free;
+    running them spends virtual user hours and stays an explicit presenter step.
+#>
+
+[CmdletBinding()]
+param()
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$global:LASTEXITCODE = 0
+
+$script:RepoRoot = Split-Path -Parent $PSScriptRoot
+$script:AzdValues = $null
+$script:Summary = [System.Collections.Generic.List[object]]::new()
+
+function Write-Step {
+    param([string]$Message)
+    Write-Host ""
+    Write-Host $Message -ForegroundColor Cyan
+}
+
+function Invoke-External {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [string]$WorkingDirectory = $script:RepoRoot
+    )
+
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $global:LASTEXITCODE = 0
+    try {
+        Push-Location $WorkingDirectory
+        $output = & $FilePath @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+        return @{
+            Ok       = ($exitCode -eq 0)
+            ExitCode = $exitCode
+            Output   = ($output | Out-String).Trim()
+        }
+    }
+    finally {
+        Pop-Location
+        $ErrorActionPreference = $previousPreference
+    }
+}
+
+function Assert-Tool {
+    param([string]$Name)
+    if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
+        throw "'$Name' is not on PATH. Install it before running this hook."
+    }
+}
+
+function Read-AzdValues {
+    if ($null -ne $script:AzdValues) { return $script:AzdValues }
+    Assert-Tool 'azd'
+
+    $result = Invoke-External 'azd' @('env', 'get-values')
+    if (-not $result.Ok) {
+        throw "Could not read the azd environment. Run 'azd up' first, or export the required hook variables.`n$result.Output"
+    }
+
+    $values = @{}
+    foreach ($line in ($result.Output -split "`r?`n")) {
+        if ($line -match '^([^=]+)=(.*)$') {
+            $values[$matches[1]] = $matches[2].Trim().Trim('"')
+        }
+    }
+    $script:AzdValues = $values
+    return $values
+}
+
+function Get-HookValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [switch]$Required
+    )
+
+    $value = [Environment]::GetEnvironmentVariable($Name)
+    if ([string]::IsNullOrWhiteSpace($value)) {
+        $values = Read-AzdValues
+        if ($values.ContainsKey($Name)) { $value = $values[$Name] }
+    }
+
+    if ($Required -and [string]::IsNullOrWhiteSpace($value)) {
+        throw "Required azd output '$Name' is missing from the hook environment."
+    }
+    return $value
+}
+
+function Get-RelativePath {
+    param([string]$Path)
+    return [System.IO.Path]::GetRelativePath($script:RepoRoot, $Path).Replace('\', '/')
+}
+
+function Normalize-Host {
+    param([string]$HostName)
+    return (($HostName.Trim() -replace '^https?://', '') -replace '/$', '')
+}
+
+function Update-TargetHostNative {
+    param([Parameter(Mandatory = $true)][string]$TargetHost)
+
+    $patterns = @('*.yaml', '*.yml', '*.json', '*.conf', '*.properties', '*.jmx')
+    $files = foreach ($pattern in $patterns) {
+        Get-ChildItem -Path (Join-Path $script:RepoRoot 'loadtests') -Recurse -File -Filter $pattern -ErrorAction SilentlyContinue
+    }
+
+    $hostPattern = [regex]'\b[a-z0-9][a-z0-9-]*\.azurewebsites\.net\b'
+    $changed = 0
+    $hits = 0
+
+    foreach ($file in ($files | Sort-Object FullName -Unique)) {
+        $original = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8
+        $localHits = 0
+        $updated = $hostPattern.Replace($original, {
+            param($match)
+            if ($match.Value.Equals($TargetHost, [StringComparison]::OrdinalIgnoreCase)) {
+                return $match.Value
+            }
+            $localHits++
+            return $TargetHost
+        })
+
+        if ($updated -ne $original) {
+            Set-Content -LiteralPath $file.FullName -Value $updated -Encoding UTF8 -NoNewline
+            $changed++
+            $hits += $localHits
+            Write-Host ("  ->  {0}  ({1} occurrence{2} updated by PowerShell fallback)" -f (Get-RelativePath $file.FullName), $localHits, $(if ($localHits -eq 1) { '' } else { 's' }))
+        }
+    }
+
+    if ($hits -eq 0) {
+        Write-Host "  =  no remaining load-test hostnames needed PowerShell fallback changes"
+    }
+    else {
+        Write-Host "  PowerShell fallback rewrote $hits occurrence(s) across $changed file(s)."
+    }
+}
+
+function Retarget-LoadTestArtifacts {
+    param(
+        [Parameter(Mandatory = $true)][string]$ServiceHostName
+    )
+
+    $targetHost = Normalize-Host $ServiceHostName
+    if ($targetHost -notmatch '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9-]+)+$') {
+        throw "SERVICE_API_HOSTNAME '$ServiceHostName' does not look like a hostname."
+    }
+
+    Write-Step "Retargeting load test artefacts to $targetHost"
+
+    $python = Get-Command 'python' -ErrorAction SilentlyContinue
+    if ($python) {
+        $result = Invoke-External $python.Source @((Join-Path $script:RepoRoot 'tools\set_target_host.py'), $targetHost)
+        if (-not $result.Ok) {
+            throw "Python retargeting failed.`n$result.Output"
+        }
+        if ($result.Output) { Write-Host $result.Output }
+        Write-Host ""
+        Write-Host "Checking for any newly-added artefacts not listed in set_target_host.py..."
+    }
+    else {
+        Write-Host "  Python is not on PATH. Using the native PowerShell fallback promised by azure.yaml."
+    }
+    Update-TargetHostNative -TargetHost $targetHost
+}
+
+function Ensure-Prerequisites {
+    Write-Step "Checking Azure CLI prerequisites"
+    Assert-Tool 'az'
+
+    $account = Invoke-External 'az' @('account', 'show', '--only-show-errors', '-o', 'none')
+    if (-not $account.Ok) {
+        throw "Azure CLI is not logged in. Run 'az login' and retry.`n$($account.Output)"
+    }
+    Write-Host "  [OK] Azure CLI is installed and logged in."
+
+    $extension = Invoke-External 'az' @('extension', 'show', '--name', 'load', '--only-show-errors', '-o', 'none')
+    if ($extension.Ok) {
+        Write-Host "  [OK] Azure CLI 'load' extension is installed."
+        return
+    }
+
+    Write-Host "  Azure CLI 'load' extension is missing. Installing it now..."
+    $install = Invoke-External 'az' @('extension', 'add', '--name', 'load', '--only-show-errors', '-o', 'none')
+    if (-not $install.Ok) {
+        throw "Could not install Azure CLI 'load' extension.`n$($install.Output)"
+    }
+    Write-Host "  [OK] Azure CLI 'load' extension installed."
+}
+
+function Read-TestConfigMetadata {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $text = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    $testId = [regex]::Match($text, '(?m)^\s*testId:\s*["'']?([^"''\s#]+)').Groups[1].Value
+    if ([string]::IsNullOrWhiteSpace($testId)) {
+        throw "No testId found in $(Get-RelativePath $Path)."
+    }
+
+    $testType = [regex]::Match($text, '(?m)^\s*testType:\s*["'']?([^"''\s#]+)').Groups[1].Value
+    if ([string]::IsNullOrWhiteSpace($testType)) { $testType = 'unknown' }
+
+    $engineInstances = [regex]::Match($text, '(?m)^\s*engineInstances:\s*["'']?([0-9]+)').Groups[1].Value
+    if ([string]::IsNullOrWhiteSpace($engineInstances)) { $engineInstances = '1' }
+
+    return [pscustomobject]@{
+        Path            = $Path
+        TestId          = $testId
+        TestType        = $testType
+        EngineInstances = $engineInstances
+    }
+}
+
+function Test-AlreadyExists {
+    param([string]$Output)
+    return ($Output -match '(?i)already\s+exists|already\s+exist|conflict|409')
+}
+
+function Get-LoadTestDetails {
+    param(
+        [string]$LoadTestName,
+        [string]$ResourceGroup,
+        [string]$SubscriptionId,
+        [string]$TestId
+    )
+
+    $args = @(
+        'load', 'test', 'show',
+        '--load-test-resource', $LoadTestName,
+        '--resource-group', $ResourceGroup,
+        '--test-id', $TestId,
+        '--only-show-errors',
+        '-o', 'json'
+    )
+    if ($SubscriptionId) { $args += @('--subscription', $SubscriptionId) }
+
+    $result = Invoke-External 'az' $args
+    if (-not $result.Ok) { return $null }
+    return ($result.Output | ConvertFrom-Json)
+}
+
+function Get-ObjectPropertyValue {
+    param(
+        [object]$Object,
+        [string]$Name
+    )
+
+    if ($null -eq $Object) { return $null }
+    foreach ($property in $Object.PSObject.Properties) {
+        if ($property.Name -eq $Name) { return $property.Value }
+    }
+    return $null
+}
+
+function Get-ValidationStatus {
+    param([object]$Details)
+
+    $statuses = [System.Collections.Generic.List[string]]::new()
+    $artifacts = Get-ObjectPropertyValue $Details 'inputArtifacts'
+    $testScript = Get-ObjectPropertyValue $artifacts 'testScriptFileInfo'
+    $urlConfig = Get-ObjectPropertyValue $artifacts 'urlTestConfigFileInfo'
+
+    $scriptStatus = Get-ObjectPropertyValue $testScript 'validationStatus'
+    $urlStatus = Get-ObjectPropertyValue $urlConfig 'validationStatus'
+
+    if ($scriptStatus) {
+        $statuses.Add([string]$scriptStatus)
+    }
+    if ($urlStatus) {
+        $statuses.Add([string]$urlStatus)
+    }
+
+    if ($statuses.Count -eq 0) { return 'UNKNOWN' }
+    if ($statuses -contains 'VALIDATION_FAILURE') { return 'VALIDATION_FAILURE' }
+    if (@($statuses | Where-Object { $_ -ne 'VALIDATION_SUCCESS' }).Count -eq 0) { return 'VALIDATION_SUCCESS' }
+    return (($statuses | Sort-Object -Unique) -join ',')
+}
+
+function New-OrUpdate-LoadTest {
+    param(
+        [object]$Config,
+        [string]$LoadTestName,
+        [string]$ResourceGroup,
+        [string]$SubscriptionId
+    )
+
+    $common = @(
+        '--load-test-resource', $LoadTestName,
+        '--resource-group', $ResourceGroup,
+        '--test-id', $Config.TestId,
+        '--load-test-config-file', $Config.Path,
+        '--only-show-errors',
+        '-o', 'none'
+    )
+    if ($SubscriptionId) { $common += @('--subscription', $SubscriptionId) }
+
+    Write-Host "  Creating $(Get-RelativePath $Config.Path) as '$($Config.TestId)'..."
+    $create = Invoke-External 'az' (@('load', 'test', 'create') + $common)
+    $operation = 'created'
+
+    if (-not $create.Ok) {
+        $exists = Test-AlreadyExists $create.Output
+        if (-not $exists) {
+            $details = Get-LoadTestDetails -LoadTestName $LoadTestName -ResourceGroup $ResourceGroup -SubscriptionId $SubscriptionId -TestId $Config.TestId
+            $exists = ($null -ne $details)
+        }
+
+        if (-not $exists) {
+            throw "Failed to create test '$($Config.TestId)'.`n$($create.Output)"
+        }
+
+        Write-Host "    Test already exists; updating it instead."
+        $update = Invoke-External 'az' (@('load', 'test', 'update') + $common)
+        if (-not $update.Ok) {
+            throw "Failed to update existing test '$($Config.TestId)'.`n$($update.Output)"
+        }
+        $operation = 'updated'
+    }
+
+    $detailsAfter = $null
+    for ($attempt = 1; $attempt -le 6; $attempt++) {
+        $detailsAfter = Get-LoadTestDetails -LoadTestName $LoadTestName -ResourceGroup $ResourceGroup -SubscriptionId $SubscriptionId -TestId $Config.TestId
+        if ($null -ne $detailsAfter) {
+            $status = Get-ValidationStatus $detailsAfter
+            if ($status -notmatch 'VALIDATION_INITIATED|VALIDATION_NOT_STARTED|UNKNOWN') { break }
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    if ($null -eq $detailsAfter) {
+        throw "Test '$($Config.TestId)' was $operation but could not be read back."
+    }
+
+    $engineCount = $Config.EngineInstances
+    $loadTestConfiguration = Get-ObjectPropertyValue $detailsAfter 'loadTestConfiguration'
+    $engineInstances = Get-ObjectPropertyValue $loadTestConfiguration 'engineInstances'
+    if ($engineInstances) {
+        $engineCount = [string]$engineInstances
+    }
+
+    $validation = Get-ValidationStatus $detailsAfter
+    $script:Summary.Add([pscustomobject]@{
+        'Test id'           = $Config.TestId
+        'Test type'         = $Config.TestType
+        'Engines'           = $engineCount
+        'Validation status' = $validation
+    })
+
+    if ($validation -ne 'VALIDATION_SUCCESS') {
+        throw "Test '$($Config.TestId)' reported validation status '$validation'."
+    }
+}
+
+function Set-DemoSecret {
+    param(
+        [string]$KeyVaultName,
+        [string]$SubscriptionId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($KeyVaultName)) {
+        Write-Host "  Key Vault not present in this environment; skipping demo secret seed."
+        return
+    }
+
+    $showArgs = @('keyvault', 'show', '--name', $KeyVaultName, '--only-show-errors', '-o', 'none')
+    if ($SubscriptionId) { $showArgs += @('--subscription', $SubscriptionId) }
+    $show = Invoke-External 'az' $showArgs
+    if (-not $show.Ok) {
+        Write-Warning "  Key Vault output is set, but the vault was not found or is not visible yet. Skipping optional secret seed.`n$($show.Output)"
+        return
+    }
+
+    Write-Host "  Seeding Key Vault secret 'demo-api-key' in '$KeyVaultName'..."
+    $args = @(
+        'keyvault', 'secret', 'set',
+        '--vault-name', $KeyVaultName,
+        '--name', 'demo-api-key',
+        '--value', 'contoso-demo-api-key',
+        '--only-show-errors',
+        '-o', 'none'
+    )
+    if ($SubscriptionId) { $args += @('--subscription', $SubscriptionId) }
+
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        $result = Invoke-External 'az' $args
+        if ($result.Ok) {
+            Write-Host "  [OK] Key Vault demo secret is present."
+            return
+        }
+
+        if ($result.Output -match '(?i)403|forbidden|authorization') {
+            Write-Warning "  Key Vault RBAC is not ready yet (attempt $attempt/5). Retrying shortly..."
+            Start-Sleep -Seconds (3 * $attempt)
+            continue
+        }
+
+        Write-Warning "  Could not seed the optional Key Vault demo secret. The load-test definitions still continue.`n$($result.Output)"
+        return
+    }
+
+    Write-Warning "  Key Vault RBAC did not become ready in time. Re-run this hook later to seed 'demo-api-key'."
+}
+
+try {
+    $resourceGroup = Get-HookValue 'AZURE_RESOURCE_GROUP' -Required
+    $subscriptionId = Get-HookValue 'AZURE_SUBSCRIPTION_ID'
+    $serviceHostName = Get-HookValue 'SERVICE_API_HOSTNAME' -Required
+    $loadTestName = Get-HookValue 'LOAD_TEST_NAME' -Required
+    $loadTestResourceId = Get-HookValue 'LOAD_TEST_RESOURCE_ID'
+    $keyVaultName = Get-HookValue 'KEY_VAULT_NAME'
+
+    if ([string]::IsNullOrWhiteSpace($loadTestResourceId) -and -not [string]::IsNullOrWhiteSpace($subscriptionId)) {
+        $loadTestResourceId = "/subscriptions/$subscriptionId/resourceGroups/$resourceGroup/providers/Microsoft.LoadTestService/loadTests/$loadTestName"
+    }
+
+    Ensure-Prerequisites
+    Retarget-LoadTestArtifacts -ServiceHostName $serviceHostName
+
+    Write-Step "Seeding optional Key Vault demo secret"
+    Set-DemoSecret -KeyVaultName $keyVaultName -SubscriptionId $subscriptionId
+
+    Write-Step "Creating or updating Azure Load Testing definitions"
+    $configs = Get-ChildItem -Path (Join-Path $script:RepoRoot 'loadtests\config') -File -Filter '*.yaml' | Sort-Object Name
+    if ($configs.Count -eq 0) {
+        throw "No load test YAML configs found under loadtests/config."
+    }
+
+    foreach ($file in $configs) {
+        $metadata = Read-TestConfigMetadata -Path $file.FullName
+        New-OrUpdate-LoadTest -Config $metadata -LoadTestName $loadTestName -ResourceGroup $resourceGroup -SubscriptionId $subscriptionId
+    }
+
+    Write-Step "Provisioned load test definitions"
+    $script:Summary | Format-Table -AutoSize
+
+    if ($loadTestResourceId) {
+        Write-Host "Portal: https://portal.azure.com/#resource$loadTestResourceId/tests"
+    }
+    Write-Host "No load tests were run. Start a run explicitly when you are ready to spend VUH."
+}
+catch {
+    Write-Host ""
+    Write-Host "Failed to provision Azure Load Testing definitions." -ForegroundColor Red
+    Write-Host $_.Exception.Message -ForegroundColor Red
+    exit 1
+}

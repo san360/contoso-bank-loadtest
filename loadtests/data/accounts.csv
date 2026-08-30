@@ -1,0 +1,21 @@
+accountId,customerName,sortCode,segment
+ACC-1001,Alice Fairweather,20-45-11,retail
+ACC-1002,Benjamin Osei,20-45-11,retail
+ACC-1003,Chandra Nair,20-45-12,retail
+ACC-1004,Dmitri Volkov,20-45-12,premier
+ACC-1005,Eleanor Whitfield,20-45-13,retail
+ACC-1006,Farhan Iqbal,20-45-13,retail
+ACC-1007,Grace Okonkwo,20-45-14,premier
+ACC-1008,Hiroshi Tanaka,20-45-14,retail
+ACC-1009,Isabella Ferrari,20-45-15,retail
+ACC-1010,Jonas Lindqvist,20-45-15,business
+ACC-2001,Katarzyna Nowak,20-45-16,retail
+ACC-2002,Liam Gallagher,20-45-16,retail
+ACC-2003,Mariam Haddad,20-45-17,premier
+ACC-2004,Noah Bergstrom,20-45-17,retail
+ACC-2005,Olusegun Adeyemi,20-45-18,retail
+ACC-2006,Priya Raghunathan,20-45-18,business
+ACC-2007,Quentin Marchand,20-45-19,retail
+ACC-2008,Rosa Delgado,20-45-19,retail
+ACC-2009,Sipho Dlamini,20-45-20,retail
+ACC-2010,Tomasz Wisniewski,20-45-20,premier

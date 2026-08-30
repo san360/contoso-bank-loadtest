@@ -1,0 +1,47 @@
+# =============================================================================
+# Contoso Bank - URL FALSE GREEN (criteria-less trap)
+# =============================================================================
+# The deliberately uncomfortable demo in docs/06 §6.4a: Azure Load Testing can
+# complete cleanly even when every application request fails if the test defines
+# no failure criteria.
+#
+# This is a URL-based test on purpose. The demo needs one static request to a
+# known-bad route, not a correlated journey; URL tests are capped at five
+# requests, and this one uses only one. Azure Load Testing generates the JMeter
+# plan from ../url-tests/contoso-bank-false-green.json.
+#
+#   1 engine x 10 VUs, 10s ramp, 1 min duration -> ~0.17 VUH raw.
+#
+# Keep it small: this is a three-minute teaching beat, not a scale test.
+#
+# Note the load profile (virtual users, ramp, duration) lives in the requests
+# JSON `testSetup` block, NOT here - that is specific to URL-based tests.
+#
+# Run it:
+#   az load test create \
+#     --load-test-resource $ALT_RESOURCE --resource-group $RG \
+#     --test-id contoso-bank-url-false-green \
+#     --load-test-config-file loadtests/config/url-false-green.yaml
+# =============================================================================
+
+version: v0.1
+
+testId: contoso-bank-url-false-green
+displayName: Contoso Bank - URL False Green
+description: Intentionally criteria-less URL test that hits a guaranteed 404 to demonstrate DONE / NOT_APPLICABLE.
+
+testType: URL
+testPlan: ../url-tests/contoso-bank-false-green.json
+
+engineInstances: 1
+splitAllCSVs: false
+
+# DELIBERATELY NO failureCriteria.
+# Do not "fix" this file by adding criteria. Its purpose is to prove that a run
+# with no criteria can finish status=DONE and testResult=NOT_APPLICABLE even
+# when every request failed. The CI guard has a named exception for this file.
+
+# AutoStop must be disabled. The request is expected to fail ~100% of the time;
+# the common 90% AutoStop setting would cancel the run and change status to
+# CANCELLED, destroying the false-green teaching point.
+autoStop: disable

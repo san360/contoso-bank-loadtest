@@ -1,0 +1,79 @@
+# =============================================================================
+# Contoso Bank - PR GATE
+# =============================================================================
+# Small, fast, cheap. This is the config that runs on every pull request.
+#
+# Design intent: this test is NOT trying to find your breaking point. It is a
+# regression gate. It asks one question - "is this change slower than the
+# baseline?" - and answers it in under four minutes.
+#
+#   1 engine x 25 threads = 25 virtual users
+#   3 minutes duration  ->  1.25 VUH raw.
+#
+#   BUT: the minimum billing rule (from 2026-03-01) charges a floor of 10 VUs
+#   per engine and a 10-minute minimum duration, so this run actually bills as
+#   25 VUs x 10 min = 4.17 VUH - about 3.3x the raw figure.
+#
+#   Still cheap, and still the right shape for a gate. The lesson is to run ONE
+#   short consolidated test per PR rather than several tiny ones, because each
+#   run pays the floor separately. See docs/12 and tools/vuh_calculator.py.
+#
+# Run it:
+#   az load test create \
+#     --load-test-resource $ALT_RESOURCE --resource-group $RG \
+#     --test-id contoso-bank-pr-gate \
+#     --load-test-config-file loadtests/config/pr-gate.yaml
+# =============================================================================
+
+version: v0.1
+
+testId: contoso-bank-pr-gate
+displayName: Contoso Bank - PR Gate
+description: Fast performance regression gate. Runs on every pull request.
+
+testType: JMX
+testPlan: ../jmeter/contoso-bank.jmx
+
+# One engine keeps the gate cheap and the results stable. Adding engines to a
+# regression gate adds variance, not signal.
+engineInstances: 1
+
+configurationFiles:
+  - ../data/accounts.csv
+
+# With a single engine this is a no-op, but leaving it true means the config is
+# correct the day someone raises engineInstances.
+splitAllCSVs: true
+
+properties:
+  userPropertyFile: ../jmeter/user.properties
+
+# Override the user.properties defaults for the gate profile.
+env:
+  - name: BASE_URL
+    value: app-loadtest-bxbs6q.azurewebsites.net
+  - name: threads
+    value: "25"
+  - name: rampup
+    value: "30"
+  - name: duration
+    value: "180"
+
+# -----------------------------------------------------------------------------
+# Failure criteria = the gate itself.
+#
+# These are deliberately loose. A PR gate that fails on normal variance gets
+# switched off within a fortnight. Tighten them once you have a stable baseline
+# (see docs/07-analyzing-results-and-bottlenecks.md).
+# -----------------------------------------------------------------------------
+failureCriteria:
+  clientMetrics:
+    - avg(response_time_ms) > 500
+    - percentage(error) > 2
+    - GetBalance: p95(response_time_ms) > 800
+    - CreateTransfer: p95(response_time_ms) > 1500
+
+# Stop burning money the moment the app is clearly broken.
+autoStop:
+  errorPercentage: 90
+  timeWindow: 60

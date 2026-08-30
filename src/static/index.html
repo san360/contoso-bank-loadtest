@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contoso Bank</title>
+  <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">Azure Load Testing demo</p>
+      <h1>Contoso Bank</h1>
+      <p class="lede">Click through realistic banking journeys while the browser recorder captures same-origin API calls.</p>
+    </div>
+    <div class="mode-card" aria-live="polite">
+      <span class="label">Current mode</span>
+      <span id="mode-badge" class="mode-badge unknown">Not loaded</span>
+      <p id="mode-subtitle" class="mode-subtitle">Bottlenecked starts with six realistic performance defects switched on; optimized switches them off without a redeploy.</p>
+      <details id="mode-legend" class="mode-legend">
+        <summary id="mode-legend-summary">What does BOTTLENECKED mean?</summary>
+        <div class="mode-legend-body">
+          <p><strong>Bottlenecked</strong> is the demo starting state: the app ships with six realistic performance defects switched on so Azure Load Testing can surface them under load.</p>
+          <p><strong>Optimized</strong> is the same code with those defects switched off, used for the after-the-fix comparison.</p>
+          <p>Switch modes at runtime with <code>POST /admin/config</code> and <code>{"preset":"bottlenecked"}</code> or <code>{"preset":"optimized"}</code>. No redeploy or restart is required.</p>
+          <p>The defects cover no caching on balance lookups, an undersized connection pool, a global lock on transfers, an N+1 transaction-history query pattern, sequential synchronous fraud and sanctions checks, and CPU-bound statement generation. The error-rate knob injects controlled 503 failures.</p>
+          <div id="mode-legend-table" class="mode-legend-table">
+            <p class="muted">Loading mode legend...</p>
+          </div>
+        </div>
+      </details>
+      <a id="status-link" href="/status">Open status page</a>
+    </div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <div class="panel-heading">
+        <div>
+          <h2>1. Account list</h2>
+          <p>Accounts load once on page open. Use the button to record the journey again.</p>
+        </div>
+        <button id="load-accounts-button" type="button">Load accounts</button>
+      </div>
+      <div class="control-grid">
+        <label for="account-select">Active account</label>
+        <select id="account-select"></select>
+        <label for="from-account-select">Transfer from</label>
+        <select id="from-account-select"></select>
+        <label for="to-account-select">Transfer to</label>
+        <select id="to-account-select"></select>
+      </div>
+      <div id="accounts-result" class="result" aria-live="polite"></div>
+    </section>
+
+    <section class="panel actions">
+      <h2>2. Read journeys</h2>
+      <div class="action-row">
+        <div>
+          <h3>View balance</h3>
+          <p>Calls <code>GET /api/accounts/{id}/balance</code>.</p>
+        </div>
+        <button id="view-balance-button" type="button">View balance</button>
+      </div>
+      <div id="balance-result" class="result" aria-live="polite"></div>
+
+      <div class="action-row">
+        <div>
+          <h3>Transaction history</h3>
+          <p>Calls <code>GET /api/accounts/{id}/transactions?page_size=N</code>.</p>
+        </div>
+        <label for="page-size-input" class="inline-label">Rows</label>
+        <input id="page-size-input" type="number" min="1" max="50" step="1" value="20">
+        <button id="view-transactions-button" type="button">View transactions</button>
+      </div>
+      <div id="transactions-result" class="result" aria-live="polite"></div>
+
+      <div class="action-row">
+        <div>
+          <h3>Generate statement</h3>
+          <p>Calls <code>GET /api/statements/{id}?months=3</code>.</p>
+        </div>
+        <button id="generate-statement-button" type="button">Generate statement</button>
+      </div>
+      <div id="statement-result" class="result" aria-live="polite"></div>
+    </section>
+
+    <section class="panel">
+      <h2>3. Make a transfer</h2>
+      <p>This records a correlated two-step flow: create the transfer, then immediately look it up by returned transaction id.</p>
+      <div class="control-grid transfer-form">
+        <label for="amount-input">Amount</label>
+        <input id="amount-input" type="number" min="1" step="0.01" value="25.00">
+        <label for="reference-input">Reference</label>
+        <input id="reference-input" type="text" maxlength="64" value="Browser recorder demo">
+      </div>
+      <button id="make-transfer-button" type="button">Make transfer and check status</button>
+      <div id="transfer-result" class="result" aria-live="polite"></div>
+    </section>
+
+    <section class="panel">
+      <h2>4. Demo mode</h2>
+      <p>Switch runtime presets, then the UI refreshes the mode badge from <code>GET /admin/config</code>.</p>
+      <div class="button-group">
+        <button id="refresh-mode-button" type="button">Refresh mode</button>
+        <button id="set-bottlenecked-button" type="button">Set bottlenecked</button>
+        <button id="set-optimized-button" type="button">Set optimized</button>
+      </div>
+      <div id="mode-result" class="result" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

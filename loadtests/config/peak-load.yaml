@@ -1,0 +1,93 @@
+# =============================================================================
+# Contoso Bank - PEAK LOAD
+# =============================================================================
+# The month-end payment surge. This is the test you run before a release, on a
+# schedule, or when capacity planning - not on every PR.
+#
+#   4 engines x 250 threads = 1,000 virtual users
+#   15 minutes duration     -> 1,000 VUs x 0.25h = 250 VUH
+#
+# This is also the config used in the live demo (docs/06). Run it once with the
+# app in `bottlenecked` mode, fix the app, run it again, then use Compare in the
+# portal to put the two runs on one chart.
+#
+# Run it:
+#   az load test create \
+#     --load-test-resource $ALT_RESOURCE --resource-group $RG \
+#     --test-id contoso-bank-peak-load \
+#     --load-test-config-file loadtests/config/peak-load.yaml
+# =============================================================================
+
+version: v0.1
+
+testId: contoso-bank-peak-load
+displayName: Contoso Bank - Peak Hour Transfers
+description: Simulates the month-end payment surge across four load engines.
+
+testType: JMX
+testPlan: ../jmeter/contoso-bank.jmx
+
+# 4 engines x 250 threads = 1,000 VUs. 250 threads is the practical ceiling for
+# a Standard_D4d_v4 engine; go wider (more engines) rather than deeper (more
+# threads per engine), or you end up measuring your load generator.
+engineInstances: 4
+
+configurationFiles:
+  - ../data/accounts.csv
+
+# Critical with multiple engines: each engine gets its own slice of the CSV, so
+# all four are not hammering the same account and warming the same cache line.
+splitAllCSVs: true
+
+properties:
+  userPropertyFile: ../jmeter/user.properties
+
+env:
+  - name: BASE_URL
+    value: app-loadtest-bxbs6q.azurewebsites.net
+  - name: threads
+    value: "250"
+  - name: rampup
+    value: "120"
+  - name: duration
+    value: "900"
+  - name: pageSize
+    value: "50"
+
+# Secrets are fetched by the load test resource's managed identity at run time.
+# The value is a Key Vault secret URI - never the secret itself.
+# Requires: Key Vault Secrets User on the vault for the load test identity.
+# secrets:
+#   - name: API_KEY
+#     value: https://kv-contoso-demo.vault.azure.net/secrets/demo-api-key
+
+# -----------------------------------------------------------------------------
+# Failure criteria: the SLOs the business actually signed up to.
+# Note the per-sampler criteria - an aggregate average hides a broken endpoint.
+# -----------------------------------------------------------------------------
+failureCriteria:
+  clientMetrics:
+    - avg(response_time_ms) > 300
+    - percentage(error) > 5
+    - GetBalance: p95(response_time_ms) > 500
+    - GetTransactions: p95(response_time_ms) > 1000
+    - CreateTransfer: p95(response_time_ms) > 1200
+    - GenerateStatement: p95(response_time_ms) > 3000
+
+autoStop:
+  errorPercentage: 90
+  timeWindow: 60
+
+# -----------------------------------------------------------------------------
+# App Components turn this from a black-box test into a diagnosis.
+# Without these you learn THAT it is slow. With them you learn WHY.
+#
+# Replace the placeholders, or let `azd up` + the deploy script fill them in.
+# The load test resource's managed identity needs Monitoring Reader on these -
+# this is the single most commonly forgotten step. See docs/07.
+# -----------------------------------------------------------------------------
+# appComponents:
+#   - resourceId: /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Web/sites/<app>
+#     kind: web
+#   - resourceId: /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Insights/components/<appinsights>
+#     kind: web

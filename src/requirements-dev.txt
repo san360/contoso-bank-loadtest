@@ -1,0 +1,8 @@
+﻿# Local development/validation of the API only.
+# NOTE: install locust separately ( + "" + pip install locust + "" + ) for the VS Code / Locust demo.
+# locust and azure-monitor-opentelemetry require native builds that have no
+# prebuilt wheels on Windows ARM64; both install cleanly on x64 and on Linux.
+fastapi==0.115.6
+uvicorn==0.34.0
+pydantic==2.10.4
+httpx==0.28.1

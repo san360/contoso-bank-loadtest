@@ -1,0 +1,28 @@
+# Copy to terraform.tfvars and edit. Do not commit terraform.tfvars.
+
+name_prefix = "contosobank"
+location    = "uksouth"
+
+# Set false where the platform team pre-creates resource groups (common in
+# higher environments).
+create_resource_group = true
+
+# Entra ID GROUP object IDs, not user IDs. Least privilege and auditable.
+load_test_contributor_principal_ids = [
+  # "00000000-0000-0000-0000-000000000000",
+]
+
+# If the system under test lives in a different resource group, point this at
+# that resource group's ID so App Components can read its metrics.
+# monitoring_reader_scope_id = "/subscriptions/.../resourceGroups/rg-contoso-bank-app"
+
+# Reuse the central workspace instead of creating one.
+# log_analytics_workspace_id = "/subscriptions/.../workspaces/log-central"
+
+tags = {
+  workload           = "load-testing"
+  environment        = "demo"
+  dataClassification = "non-production"
+  managedBy          = "terraform"
+  costCentre         = "CHANGE-ME"
+}

@@ -1,0 +1,28 @@
+{
+  "version": "1.0",
+  "scenarios": {
+    "requestGroup1": {
+      "requests": [
+        {
+          "requestName": "GetBalance",
+          "requestType": "URL",
+          "method": "GET",
+          "endpoint": "https://app-loadtest-bxbs6q.azurewebsites.net/api/accounts/ACC-1001/balance",
+          "queryParameters": [],
+          "headers": {},
+          "responseVariables": []
+        }
+      ],
+      "csvDataSetConfigList": []
+    }
+  },
+  "testSetup": [
+    {
+      "scenario": "requestGroup1",
+      "loadType": "Linear",
+      "virtualUsersPerEngine": 50,
+      "rampUpTimeInSeconds": 30,
+      "durationInSeconds": 180
+    }
+  ]
+}

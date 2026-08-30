@@ -1,0 +1,56 @@
+# =============================================================================
+# Contoso Bank - PEAK LOAD (Locust flavour)
+# =============================================================================
+# Identical scenario and load profile to peak-load.yaml, expressed as ~90 lines
+# of Python instead of ~450 lines of JMeter XML.
+#
+# Use this in the demo straight after the JMX run to make the point that the
+# service is script-agnostic: same engines, same dashboard, same failure
+# criteria, same CI/CD task. Only `testType` and `testPlan` change.
+#
+# This is also the format the VS Code extension and GitHub Copilot generate
+# (docs 09 and 10), so it doubles as the known-good fallback if live generation
+# misbehaves in front of the customer.
+# =============================================================================
+
+version: v0.1
+
+testId: contoso-bank-peak-load-locust
+displayName: Contoso Bank - Peak Hour Transfers (Locust)
+description: Same month-end surge as the JMX test, written in Python.
+
+testType: Locust
+testPlan: ../locust/locustfile.py
+
+engineInstances: 4
+
+properties:
+  userPropertyFile: ../locust/locust.conf
+
+env:
+  - name: BASE_URL
+    value: app-loadtest-bxbs6q.azurewebsites.net
+  - name: PAGE_SIZE
+    value: "50"
+  - name: LOCUST_HOST
+    value: https://app-loadtest-bxbs6q.azurewebsites.net
+  - name: LOCUST_USERS
+    value: "250"
+  - name: LOCUST_SPAWN_RATE
+    value: "5"
+  # Azure Load Testing validates this env var as an integer number of seconds -
+  # Locust's own duration syntax ("15m") is rejected at test-create time. The
+  # locust.conf `run-time = 15m` below is fine; only the env override is strict.
+  - name: LOCUST_RUN_TIME
+    value: "900"
+
+failureCriteria:
+  clientMetrics:
+    - avg(response_time_ms) > 300
+    - percentage(error) > 5
+    - GetBalance: p95(response_time_ms) > 500
+    - CreateTransfer: p95(response_time_ms) > 1200
+
+autoStop:
+  errorPercentage: 90
+  timeWindow: 60
