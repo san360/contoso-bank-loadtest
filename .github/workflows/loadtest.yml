@@ -198,12 +198,20 @@ jobs:
             exit 1
           fi
 
-          read -r status result < <(az load test-run show \
+          # One call, one payload. An earlier version used
+          #   read -r status result < <(az ... -o tsv | tr '\n' ' ')
+          # which silently killed this whole step: tr removes the trailing
+          # newline, so read hits EOF, returns 1, and `set -e` aborts before any
+          # gate logic runs. Caught by executing the step rather than reading it.
+          run_json=$(az load test-run show \
             --load-test-resource "$LOAD_TEST_RESOURCE" \
             --resource-group "$RESOURCE_GROUP" \
             --test-run-id "$RUN_ID" \
-            --query "[status, testResult]" \
-            -o tsv | tr '\n' ' ')
+            --query "{status:status,testResult:testResult,criteria:passFailCriteria.passFailMetrics}" \
+            -o json)
+
+          status=$(printf '%s' "$run_json" | jq -r '.status // "UNKNOWN"')
+          result=$(printf '%s' "$run_json" | jq -r '.testResult // "UNKNOWN"')
 
           echo "status=$status testResult=$result runId=$RUN_ID"
 
@@ -225,28 +233,8 @@ jobs:
           # after status reached DONE, settling to FAILED only later. The
           # per-criterion results, however, were already correct and complete in
           # the first DONE response. So derive the verdict from the criteria and
-          # treat testResult as advisory.
-          for attempt in 1 2 3 4 5 6; do
-            [ "$result" = "NOT_APPLICABLE" ] || break
-            echo "testResult=NOT_APPLICABLE; re-querying after 10s to let the aggregate settle ($attempt/6)."
-            sleep 10
-            result=$(az load test-run show \
-              --load-test-resource "$LOAD_TEST_RESOURCE" \
-              --resource-group "$RESOURCE_GROUP" \
-              --test-run-id "$RUN_ID" \
-              --query "testResult" \
-              -o tsv)
-          done
-
-          criteria_json=$(az load test-run show \
-            --load-test-resource "$LOAD_TEST_RESOURCE" \
-            --resource-group "$RESOURCE_GROUP" \
-            --test-run-id "$RUN_ID" \
-            --query "passFailCriteria.passFailMetrics" \
-            -o json) || criteria_json=""
-
-          # An absent field can come back as the literal null or as nothing at
-          # all. jq copes with null; it errors on empty input.
+          # treat testResult as advisory - we never branch on it.
+          criteria_json=$(printf '%s' "$run_json" | jq '.criteria')
           [ -n "$criteria_json" ] || criteria_json="null"
 
           criteria_total=$(printf '%s' "$criteria_json" | jq 'if . == null then 0 else (to_entries | length) end')

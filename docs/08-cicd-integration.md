@@ -315,12 +315,16 @@ The distinction is not pedantry. A developer who sees "performance gate failed" 
 ### The guard implemented in `loadtest.yml`
 
 ```bash
-read -r status result < <(az load test-run show \
+# One call, one payload.
+run_json=$(az load test-run show \
   --load-test-resource "$LOAD_TEST_RESOURCE" \
   --resource-group "$RESOURCE_GROUP" \
   --test-run-id "$RUN_ID" \
-  --query "[status, testResult]" \
-  -o tsv | tr '\n' ' ')
+  --query "{status:status,testResult:testResult,criteria:passFailCriteria.passFailMetrics}" \
+  -o json)
+
+status=$(printf '%s' "$run_json" | jq -r '.status // "UNKNOWN"')
+result=$(printf '%s' "$run_json" | jq -r '.testResult // "UNKNOWN"')
 
 case "$status" in
   DONE) ;;
@@ -332,22 +336,8 @@ case "$status" in
     exit 1 ;;
 esac
 
-for attempt in 1 2 3 4 5 6; do
-  [ "$result" = "NOT_APPLICABLE" ] || break
-  sleep 10
-  result=$(az load test-run show \
-    --load-test-resource "$LOAD_TEST_RESOURCE" \
-    --resource-group "$RESOURCE_GROUP" \
-    --test-run-id "$RUN_ID" \
-    --query "testResult" -o tsv)
-done
-
 # The verdict comes from the per-criterion results, not the aggregate.
-criteria_json=$(az load test-run show \
-  --load-test-resource "$LOAD_TEST_RESOURCE" \
-  --resource-group "$RESOURCE_GROUP" \
-  --test-run-id "$RUN_ID" \
-  --query "passFailCriteria.passFailMetrics" -o json) || criteria_json=""
+criteria_json=$(printf '%s' "$run_json" | jq '.criteria')
 [ -n "$criteria_json" ] || criteria_json="null"
 
 criteria_total=$(printf '%s' "$criteria_json" \
@@ -368,9 +358,17 @@ fi
 echo "Load test passed with $criteria_total criteria enforced."
 ```
 
-> **Why the gate reads the criteria, not `testResult`.** `status` and `testResult` are populated independently, and the aggregate lags — by far longer than is safe to wait on. Measured on run `verify-cutover-20260830-163946` in this very kit: `status` reached `DONE` while `testResult` read `NOT_APPLICABLE`, and it **stayed `NOT_APPLICABLE` for more than 60 seconds** before settling to `FAILED`. In that same first `DONE` response, `passFailCriteria.passFailMetrics` **already** reported `avg(response_time_ms) = 3978 > 500` as `"failed"`. So the per-criterion results are correct and complete when the run finishes; the aggregate is merely advisory. A gate that polls `testResult` on any bounded retry budget will eventually emit a **false green** — the exact failure mode §6.4a exists to teach. The retry loop above is kept only to make the log line accurate; nothing branches on its outcome.
+> **Why the gate reads the criteria, not `testResult`.** `status` and `testResult` are populated independently, and the aggregate lags — by far longer than is safe to wait on. Measured on run `verify-cutover-20260830-163946` in this very kit: `status` reached `DONE` while `testResult` read `NOT_APPLICABLE`, and it **stayed `NOT_APPLICABLE` for more than 60 seconds** before settling to `FAILED`. In that same first `DONE` response, `passFailCriteria.passFailMetrics` **already** reported `avg(response_time_ms) = 3978 > 500` as `"failed"`. So the per-criterion results are correct and complete when the run finishes; the aggregate is merely advisory, and the gate never branches on it. A gate that polls `testResult` on any bounded retry budget will eventually emit a **false green** — the exact failure mode §6.4a exists to teach.
 >
 > This also makes the third outcome collapse cleanly: "criteria exist but the aggregate has not settled" is no longer a distinct case to fail on, because the criteria are readable regardless. Only a genuinely criteria-less test yields `NOT_APPLICABLE` as a *real* answer.
+
+> **A bug worth repeating, because it hid in plain sight.** The first version of this step began:
+>
+> ```bash
+> read -r status result < <(az load test-run show ... -o tsv | tr '\n' ' ')
+> ```
+>
+> It reads fine. It is also fatal: `tr` replaces the trailing newline with a space, so `read` reaches EOF and returns **1**, and under GitHub's default `bash -eo pipefail` the step aborts **immediately** — before a single line of gate logic runs, with no output but an exit code. Every run would have failed identically, whatever the app did. It was found only by *executing* the step against a real run rather than reviewing it. Hence the single `-o json` fetch above: one call, no `read`, no `tr`, and every field parsed by `jq`.
 
 ### Shift it further left — catch it before the test even runs
 
