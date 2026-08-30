@@ -114,6 +114,7 @@ Start with [`docs/00-agenda-and-runbook.md`](./docs/00-agenda-and-runbook.md).
 | 17 | [Portal-free operations and LGTM/Grafana integration](./docs/17-portal-free-operations-and-observability.md) |
 | 18 | [**Deploy and first run — hands-on walkthrough**](./docs/18-deploy-and-first-run.md) |
 | 19 | [Recording walkthrough and test catalog](./docs/19-recording-and-test-catalog.md) |
+| 20 | [Private network integration (VNet injection) — research](./docs/20-private-network-integration.md) |
 
 Sections 02, 07, 11, 12, 13, 14, 17, 18 and 19 were added to the original agenda — see doc 00 for the rationale.
 

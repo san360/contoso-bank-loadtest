@@ -497,6 +497,15 @@ seed_demo_secret() {
             printf '  [OK] Key Vault demo secret is present.\n'
             return 0
         fi
+        if printf '%s' "$out" | grep -Eiq 'public network access is disabled|ForbiddenByConnection|not from a trusted service'; then
+            printf "  [WARN] Key Vault '%s' has publicNetworkAccess=Disabled, so its data plane is unreachable from this machine.\n" "$key_vault_name" >&2
+            printf "    This is an Azure Policy 'modify' effect in this subscription, not a misconfiguration in this repo:\n"
+            printf "    the vault is created with public access enabled and the platform silently overrides it.\n"
+            printf "    Consequence: 'contoso-bank-secrets-kv' will validate at create time but FAIL at run time.\n"
+            printf "    That test is kept deliberately as the governance cautionary tale - see docs/11 and docs/20.\n"
+            printf "    For a secret that actually resolves, use the CI pipeline-secret path in docs/08.\n"
+            return 0
+        fi
         if printf '%s' "$out" | grep -Eiq '403|forbidden|authorization'; then
             printf '  [WARN] Key Vault RBAC is not ready yet (attempt %s/5). Retrying shortly...\n' "$attempt" >&2
             sleep $((3 * attempt))

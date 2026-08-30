@@ -132,17 +132,20 @@ function Update-TargetHostNative {
 
     foreach ($file in ($files | Sort-Object FullName -Unique)) {
         $original = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8
-        $localHits = 0
-        $updated = $hostPattern.Replace($original, {
-            param($match)
-            if ($match.Value.Equals($TargetHost, [StringComparison]::OrdinalIgnoreCase)) {
-                return $match.Value
-            }
-            $localHits++
-            return $TargetHost
-        })
 
-        if ($updated -ne $original) {
+        # Count first. A MatchEvaluator scriptblock runs in a child scope, so
+        # incrementing a counter inside it silently updates a copy and the caller
+        # always sees zero.
+        $localHits = @($hostPattern.Matches($original) | Where-Object {
+                -not $_.Value.Equals($TargetHost, [StringComparison]::OrdinalIgnoreCase)
+            }).Count
+
+        $updated = $hostPattern.Replace($original, {
+                param($match)
+                return $TargetHost
+            })
+
+        if ($updated -cne $original) {
             Set-Content -LiteralPath $file.FullName -Value $updated -Encoding UTF8 -NoNewline
             $changed++
             $hits += $localHits
@@ -204,16 +207,20 @@ function Update-KeyVaultReferences {
 
     foreach ($file in ($files | Sort-Object FullName -Unique)) {
         $original = Get-Content -LiteralPath $file.FullName -Raw -Encoding UTF8
-        $localHits = 0
+
+        # Count first. A MatchEvaluator scriptblock runs in a child scope, so
+        # incrementing a counter inside it silently updates a copy and the caller
+        # always sees zero.
+        $localHits = @($vaultPattern.Matches($original) | Where-Object {
+                $_.Value -cne "https://$KeyVaultName.vault.azure.net/secrets/$($_.Groups[1].Value)"
+            }).Count
+
         $updated = $vaultPattern.Replace($original, {
                 param($match)
-                $desired = "https://$KeyVaultName.vault.azure.net/secrets/$($match.Groups[1].Value)"
-                if ($match.Value -ceq $desired) { return $match.Value }
-                $localHits++
-                return $desired
+                return "https://$KeyVaultName.vault.azure.net/secrets/$($match.Groups[1].Value)"
             })
 
-        if ($updated -ne $original) {
+        if ($updated -cne $original) {
             Set-Content -LiteralPath $file.FullName -Value $updated -Encoding UTF8 -NoNewline
             $hits += $localHits
             Write-Host ("  ->  {0}  ({1} secret URI(s) updated)" -f (Get-RelativePath $file.FullName), $localHits)
@@ -637,6 +644,20 @@ function Set-DemoSecret {
         $result = Invoke-External 'az' $args
         if ($result.Ok) {
             Write-Host "  [OK] Key Vault demo secret is present."
+            return
+        }
+
+        # Distinguish a genuinely transient RBAC propagation delay from a permanent
+        # network block. Retrying a network block just burns 45 seconds and then
+        # reports the wrong cause, which sends people hunting for a role assignment
+        # that is already correct.
+        if ($result.Output -match '(?i)public network access is disabled|ForbiddenByConnection|not from a trusted service') {
+            Write-Warning "  Key Vault '$KeyVaultName' has publicNetworkAccess=Disabled, so its data plane is unreachable from this machine."
+            Write-Host    "    This is an Azure Policy 'modify' effect in this subscription, not a misconfiguration in this repo:"
+            Write-Host    "    the vault is created with public access enabled and the platform silently overrides it."
+            Write-Host    "    Consequence: 'contoso-bank-secrets-kv' will validate at create time but FAIL at run time."
+            Write-Host    "    That test is kept deliberately as the governance cautionary tale - see docs/11 and docs/20."
+            Write-Host    "    For a secret that actually resolves, use the CI pipeline-secret path in docs/08."
             return
         }
 
