@@ -9,6 +9,17 @@
 # a load test without learning JMeter, Locust, or even the structured URL JSON.
 # Azure Load Testing still generates the JMeter plan for you afterwards.
 #
+# SIX requests, and the 4th and 5th are correlated: CreateTransfer extracts
+# $.transaction_id into ${curlTransferId} and GetTransferById reads it back. That
+# proves a cURL request can PRODUCE a response variable, not just consume one -
+# measured on run curlextract-162357, and again here on run
+# curl-correlated-163056 (1583 samples, 0% errors, real ids in the results CSV).
+#
+# Not to be confused with contoso-bank-url-correlated: that test exists to TEACH
+# response variables (a URL request extracts, then a URL and a cURL request both
+# consume). This one is the "bring your own runbook commands" flavour that happens
+# to correlate as well. Keep both; they answer different customer questions.
+#
 #   1 engine x 50 VUs, 30s ramp, 3 min duration -> 2.5 VUH raw.
 #
 # Note the load profile (virtual users, ramp, duration) lives in the requests
@@ -31,7 +42,7 @@ version: v0.1
 
 testId: contoso-bank-url-curl
 displayName: Contoso Bank - URL cURL
-description: Five-request URL test defined from cURL commands instead of a script.
+description: Six cURL commands, including a correlated create-then-read transfer.
 
 testType: URL
 testPlan: ../url-tests/contoso-bank-curl.json
