@@ -13,9 +13,11 @@
 # Note the load profile (virtual users, ramp, duration) lives in the requests
 # JSON `testSetup` block, NOT here - that is specific to URL-based tests.
 #
-# Limitation to be honest about: URL tests handle static request sequences and
-# a maximum of five requests. The correlated transfer flow (create transfer ->
-# read its status by id) needs the JMX or Locust flavour.
+# Limitation to be honest about: URL tests are capped at five requests and have
+# no scripting logic. They are NOT limited to static sequences - response
+# variables give you correlated, dependent requests (create transfer -> read it
+# back by the returned id). See loadtests/config/url-correlated.yaml and
+# docs/13 section 13.6.
 #
 # Run it:
 #   az load test create \

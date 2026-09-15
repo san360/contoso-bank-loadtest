@@ -146,7 +146,7 @@ Send within 24 hours while the demo is still fresh:
 
 Seeds to plant for follow-on engagement:
 
-- **Chaos engineering + load** — Azure Chaos Studio during a load test, to evidence operational resilience under severe-but-plausible scenarios (doc 13.10)
+- **Chaos engineering + load** — Azure Chaos Studio during a load test, to evidence operational resilience under severe-but-plausible scenarios (doc 13.11)
 - **Performance budgets in architecture review** — every new service declares its SLO and ships with a load test from day one
 - **Production-shaped continuous validation** — synthetic load in production during low-traffic windows
 - **Capacity forecasting** — feeding load test results into capacity planning and cloud spend forecasting

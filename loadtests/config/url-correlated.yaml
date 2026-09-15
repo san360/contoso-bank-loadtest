@@ -1,0 +1,64 @@
+# =============================================================================
+# Contoso Bank - URL CORRELATED (response variables, no script)
+# =============================================================================
+# Proves that a URL-based test can do a DYNAMIC, dependent request sequence -
+# not just a list of independent URLs.
+#
+# The flow is the real banking one:
+#
+#   1. POST /api/transfers            -> returns a generated transaction_id
+#   2. GET  /api/transfers/{that id}  -> reads back the transfer just created
+#   3. the same read again as a cURL request, to prove the extracted variable
+#      is shared across request types within the scenario
+#
+# Step 1 extracts the id with a response variable:
+#
+#   "responseVariables": [
+#     { "extractorType": "JSONExtractor",
+#       "expression": "$.transaction_id",
+#       "variableName": "transferId" }
+#   ]
+#
+# and steps 2 and 3 refer to it as ${transferId}.
+#
+# WHY THIS TEST EXISTS
+# --------------------
+# Without response variables, a no-code test can only replay hardcoded values.
+# Against this API a hardcoded transfer id returns 404 for every single request,
+# so the test would measure the error path at full speed and tell you nothing
+# about the payment journey. See docs/13 section 13.6.
+#
+# THIS TEST IS SELF-VALIDATING
+# ----------------------------
+# If the extraction breaks, step 2 requests the literal string ${transferId},
+# the API returns 404, and `percentage(error) > 5` fails the run. A green run
+# therefore means the correlation genuinely worked - it is not a false green.
+#
+#   1 engine x 20 VUs, 20s ramp, 2 min duration -> ~0.7 VUH.
+#
+# Run it:
+#   pwsh -File tools/run_loadtest.ps1 -TestId contoso-bank-url-correlated
+# =============================================================================
+
+version: v0.1
+
+testId: contoso-bank-url-correlated
+displayName: Contoso Bank - URL Correlated (response variables)
+description: Create a transfer, extract its id, read it back - without any script.
+
+testType: URL
+testPlan: ../url-tests/contoso-bank-correlated.json
+
+engineInstances: 1
+splitAllCSVs: false
+
+# percentage(error) is the load-bearing criterion here: it is what turns a broken
+# extraction into a failed run instead of a silently meaningless one.
+failureCriteria:
+  clientMetrics:
+    - percentage(error) > 5
+    - avg(response_time_ms) > 2000
+
+autoStop:
+  errorPercentage: 90
+  timeWindow: 60

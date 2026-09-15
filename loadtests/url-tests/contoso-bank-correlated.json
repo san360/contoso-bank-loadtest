@@ -1,0 +1,56 @@
+{
+  "version": "1.0",
+  "scenarios": {
+    "requestGroup1": {
+      "requests": [
+        {
+          "requestName": "CreateTransfer",
+          "requestType": "URL",
+          "method": "POST",
+          "endpoint": "https://app-loadtest-27d2e5.azurewebsites.net/api/transfers",
+          "queryParameters": [],
+          "headers": {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+          },
+          "body": "{\"from_account\":\"ACC-1001\",\"to_account\":\"ACC-2002\",\"amount_minor\":1,\"currency\":\"GBP\",\"reference\":\"CORRELATED\"}",
+          "requestBodyFormat": "JSON",
+          "responseVariables": [
+            {
+              "extractorType": "JSONExtractor",
+              "expression": "$.transaction_id",
+              "variableName": "transferId"
+            }
+          ]
+        },
+        {
+          "requestName": "GetTransferById",
+          "requestType": "URL",
+          "method": "GET",
+          "endpoint": "https://app-loadtest-27d2e5.azurewebsites.net/api/transfers/${transferId}",
+          "queryParameters": [],
+          "headers": {
+            "Accept": "application/json"
+          },
+          "responseVariables": []
+        },
+        {
+          "requestName": "GetTransferByIdCurl",
+          "requestType": "CURL",
+          "curlCommand": "curl --request GET 'https://app-loadtest-27d2e5.azurewebsites.net/api/transfers/${transferId}' --header 'Accept: application/json'",
+          "responseVariables": []
+        }
+      ],
+      "csvDataSetConfigList": []
+    }
+  },
+  "testSetup": [
+    {
+      "scenario": "requestGroup1",
+      "loadType": "Linear",
+      "virtualUsersPerEngine": 20,
+      "rampUpTimeInSeconds": 20,
+      "durationInSeconds": 120
+    }
+  ]
+}

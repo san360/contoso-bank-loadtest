@@ -83,7 +83,7 @@ Measured improvement (see [`tools/validate_bottlenecks.py`](./tools/validate_bot
 
 ---
 
-## Eight test definitions, four demo flavours
+## Nine test definitions, four demo flavours
 
 The kit deliberately shows the same scenario several ways, because "how do we get started?" has different answers depending on who's asking. `azd up` creates all YAML definitions automatically.
 
@@ -92,6 +92,7 @@ The kit deliberately shows the same scenario several ways, because "how do we ge
 | **URL basic** | [`loadtests/config/url-basic.yaml`](./loadtests/config/url-basic.yaml) + URL JSON | Opening no-code demo: one endpoint, no script | 2 min |
 | **URL smoke** | [`loadtests/config/url-smoke.yaml`](./loadtests/config/url-smoke.yaml) + URL JSON | No-script multi-request smoke test with criteria | 3 min |
 | **URL cURL** | [`loadtests/config/url-curl.yaml`](./loadtests/config/url-curl.yaml) + cURL JSON | Bring existing runbook/Postman commands | 3 min |
+| **URL correlated** | [`loadtests/config/url-correlated.yaml`](./loadtests/config/url-correlated.yaml) + URL JSON | **Response variables**: create a transfer, extract its id, read it back — a dependent journey with no script ([doc 13.6](./docs/13-advanced-scenarios.md)) | 2 min |
 | **URL false green** | [`loadtests/config/url-false-green.yaml`](./loadtests/config/url-false-green.yaml) + URL JSON | Criteria-less 404 test that proves "Completed" can still mean 100% errors | 3 min |
 | **PR gate** | [`loadtests/config/pr-gate.yaml`](./loadtests/config/pr-gate.yaml) + JMeter | Cheap shift-left regression gate | 5 min |
 | **Peak load** | [`loadtests/config/peak-load.yaml`](./loadtests/config/peak-load.yaml) + JMeter | Headline 1,000-VU release/capacity test | 15 min run |

@@ -48,6 +48,12 @@
 .PARAMETER DownloadResults
     Download the results (CSV/JTL) and the JMeter HTML report once the run finishes.
 
+.PARAMETER ResetData
+    POST /admin/reset to the demo API before starting, re-seeding accounts, balances
+    and counters. Use it before any test that moves money: repeated transfer runs
+    drain the demo accounts, and a drained account answers 422 instead of 201, which
+    looks exactly like a broken test.
+
 .PARAMETER OutputDirectory
     Where -DownloadResults writes to. Defaults to .loadtest-results/<runId>.
 
@@ -81,6 +87,7 @@ param(
     [switch]$NoWait,
     [int]$TimeoutMinutes = 40,
     [switch]$DownloadResults,
+    [switch]$ResetData,
     [string]$OutputDirectory,
     [string]$LoadTestName,
     [string]$ResourceGroup,
@@ -267,20 +274,42 @@ function Show-TestCatalog {
     Write-Host "Anything marked Deployed=no needs 'pwsh -File tools/provision_loadtests.ps1' first."
 }
 
-function Set-AppPreset {
-    param([Parameter(Mandatory = $true)][string]$PresetName)
-
+function Get-ApiBaseUri {
     $apiUri = Get-EnvironmentValue 'SERVICE_API_URI'
     if ([string]::IsNullOrWhiteSpace($apiUri)) {
         $apiHost = Get-EnvironmentValue 'SERVICE_API_HOSTNAME'
         if ([string]::IsNullOrWhiteSpace($apiHost)) {
-            throw "-Preset needs SERVICE_API_URI or SERVICE_API_HOSTNAME from the azd environment."
+            return $null
         }
         $apiUri = "https://$apiHost"
     }
+    return $apiUri.TrimEnd('/')
+}
+
+function Reset-AppData {
+    # Re-seeds accounts, balances and counters. Tests that move money (the
+    # correlated transfer flow especially) drain the demo accounts, and a drained
+    # account returns 422 instead of 201 - which looks like a broken test.
+    $apiUri = Get-ApiBaseUri
+    if ([string]::IsNullOrWhiteSpace($apiUri)) {
+        throw "-ResetData needs SERVICE_API_URI or SERVICE_API_HOSTNAME from the azd environment."
+    }
+
+    Write-Step "Resetting the demo app's seed data"
+    $response = Invoke-RestMethod -Method Post -Uri "$apiUri/admin/reset" -TimeoutSec 60
+    Write-Host "  [OK] $apiUri reseeded ($(Get-ObjectPropertyValue $response 'accounts') accounts)."
+}
+
+function Set-AppPreset {
+    param([Parameter(Mandatory = $true)][string]$PresetName)
+
+    $apiUri = Get-ApiBaseUri
+    if ([string]::IsNullOrWhiteSpace($apiUri)) {
+        throw "-Preset needs SERVICE_API_URI or SERVICE_API_HOSTNAME from the azd environment."
+    }
 
     Write-Step "Switching the demo app to the '$PresetName' preset"
-    $response = Invoke-RestMethod -Method Post -Uri "$($apiUri.TrimEnd('/'))/admin/config" `
+    $response = Invoke-RestMethod -Method Post -Uri "$apiUri/admin/config" `
         -ContentType 'application/json' -Body (@{ preset = $PresetName } | ConvertTo-Json) -TimeoutSec 30
     $applied = Get-ObjectPropertyValue $response 'applied'
     $settingCount = if ($applied) { @($applied.PSObject.Properties).Count } else { 0 }
@@ -699,6 +728,7 @@ try {
         exit 0
     }
 
+    if ($ResetData) { Reset-AppData }
     if ($Preset) { Set-AppPreset -PresetName $Preset }
 
     if ($All) {
