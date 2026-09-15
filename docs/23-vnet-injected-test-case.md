@@ -591,7 +591,140 @@ This order keeps the kit shippable after every step.
 
 ---
 
-## 23.11 Citations and verification notes
+## 23.11 Bring your own subnet — verified against this subscription
+
+Sections 23.1–23.11 design the network from scratch. This section answers the practical case: **the VNet and subnets already exist and you just want to pass a name.** Everything below was measured on 2026-09-15 in subscription `1da52b57…`, region `swedencentral`, against `vnet-lab-sdc-001` (`10.64.0.0/20`, resource group `rg-network-lab-sdc`).
+
+### 23.11.1 The requirement checklist, scored against the existing `snet-loadtest`
+
+The engine subnet is `snet-loadtest` (`10.64.8.0/23`).
+
+| Requirement | Needed | `snet-loadtest` | Verdict |
+|---|---|---|---|
+| Same subscription as the load testing resource | Yes | same subscription | ✅ |
+| Same region as the load testing resource | Yes | `swedencentral`, matching `alt-loadtest-27d2e5` | ✅ |
+| **Not delegated to another service** | Mandatory | `delegations: 0` | ✅ |
+| Enough unassigned IPv4 addresses | Per engine count | `/23` → 507 usable, 1 in use | ✅ generous |
+| Not named `AzureFirewallSubnet` | Mandatory | `snet-loadtest` | ✅ |
+| IPv4 only | Mandatory | IPv4 only | ✅ |
+| Outbound connectivity for engines | Required | NSG `nsg-loadtest-lab-sdc-001` rule `azure-load-testing-outbound`, priority 100, Allow `*`:`*` | ✅ |
+| Route table in `Succeeded` state, egress preserved | If attached | no route table attached | ✅ |
+| `Microsoft.Batch` registered in the subscription | Mandatory | `Registered` | ✅ |
+| Caller has subnet `join/action` (Network Contributor or parent) | Mandatory | test creation with `--subnet-id` succeeded | ✅ |
+
+**Nothing needed changing.** That subnet was already fit for purpose.
+
+### 23.11.2 Proof it works — a real injected run
+
+A disposable test was created against the existing subnet and executed end to end:
+
+```powershell
+$subnet = "/subscriptions/<sub>/resourceGroups/rg-network-lab-sdc/providers/Microsoft.Network" +
+          "/virtualNetworks/vnet-lab-sdc-001/subnets/snet-loadtest"
+
+az load test create `
+  --load-test-resource alt-loadtest-27d2e5 --resource-group rg-loadtest `
+  --test-id scratch-private-probe `
+  --load-test-config-file loadtests/config/url-basic.yaml `
+  --subnet-id $subnet
+```
+
+| Observation | Result |
+|---|---|
+| Test definition | `subnetId` set, `publicIPDisabled: false`, artefact `VALIDATION_SUCCESS` |
+| Run `vnet-probe-143704` | `PROVISIONING → EXECUTING → DONE` |
+| Injected into the VNet's resource group **during** the run | `…-azurebatch-cloudserviceloadbalancer` (the ephemeral Azure Load Balancer) |
+| After the run | the ephemeral resources were gone — nothing left behind |
+| Engine log | `summary = 4454 in 00:03:01 = 24.6/s Avg: 1855 Err: 0 (0.00%)`, 50 active VUs |
+| Results CSV | 4,454 rows, all `GetBalance … 200 OK` |
+
+> **⚠️ Gotcha worth knowing before the session.** For this injected run, `testRunStatistics` came back **null** — no `sampleCount`, no percentiles — and was *still* null more than ten minutes after `DONE`, even though the metrics API returned a full `VirtualUsers` series (17 → 48 → 50 → 48) and the results CSV held all 4,454 samples. **An empty statistics block is not evidence of an empty run.** Fall back to `az load test-run metrics list` and `az load test-run download-files --result`. `tools/run_loadtest.ps1` now says this explicitly instead of printing a blank block. ⚠️ Not established whether this is specific to VNet-injected runs or simply slow aggregation.
+
+### 23.11.3 Sizing: how big does the engine subnet need to be?
+
+Microsoft Learn asks for "enough unassigned IP addresses" and publishes **no per-engine formula**, so size it by reasoning rather than by a documented constant:
+
+| Engines | Practical subnet | Notes |
+|---|---:|---|
+| 1–10 (this kit: max 4) | `/27` (27 usable) | Azure reserves 5 addresses in every subnet |
+| up to ~50 | `/26` – `/25` | |
+| up to ~200 | `/24` (251 usable) | |
+| 400 (service maximum) | `/23` (507 usable) | what you already have — headroom for the largest supported run |
+
+Budget more than one address per engine: the injected load balancer and the platform's own plumbing consume addresses too, and a run that cannot allocate will fail at provisioning rather than degrade. `/23` for `snet-loadtest` is comfortably future-proof.
+
+### 23.11.4 Can Container Apps be injected?
+
+Two different questions hide behind this one, and they have opposite answers.
+
+**(a) Can Azure Load Testing engines be injected into a Container Apps subnet? — No.**
+
+A Container Apps environment requires its infrastructure subnet to be **delegated to `Microsoft.App/environments`**, and the load testing engine subnet **must not be delegated to any service**. The two requirements are mutually exclusive. In this VNet that rules out both:
+
+| Subnet | Delegation | Usable for ALT engines? |
+|---|---|---|
+| `snet-agents-phase1` (`10.64.2.0/23`) | `Microsoft.App/environments` | ❌ delegated |
+| `snet-agents-phase2` (`10.64.4.0/23`) | `Microsoft.App/environments` | ❌ delegated |
+| `snet-ase` (`10.64.1.0/24`) | `Microsoft.Web/hostingEnvironments` | ❌ delegated |
+| `snet-dns-in` / `snet-dns-out` | `Microsoft.Network/dnsResolvers` | ❌ delegated |
+| `AzureFirewallSubnet` | — | ❌ reserved name, explicitly unsupported |
+| `snet-pe` (`10.64.0.128/26`) | none | ⚠️ works, but keep private endpoints and engines separate |
+| **`snet-loadtest` (`10.64.8.0/23`)** | none | ✅ **use this one** |
+
+**(b) Can a Container App be the private *target* of a load test? — Yes.**
+
+Deploy the target into an **internal** Container Apps environment (`internal: true`) whose infrastructure subnet lives in this VNet, link the environment's private DNS zone, and point an injected test at its internal FQDN. Engines in `snet-loadtest` resolve and reach it; the public internet cannot. Engines and workload simply live in *different* subnets of the same VNet — which is the recommended topology anyway.
+
+> Note for this subscription: all five existing Container Apps environments (`cae-contoso-meals`, `cae-doc-bot-…`, `acaenv-…`, `clm-mcp-env`, `cae-…`) report `vnetConfiguration: null`, i.e. none is VNet-injected today. The delegated `snet-agents-phase1/2` subnets appear to be reserved for future environments. So there is currently **no private Container Apps target to test against** — one would have to be created.
+
+**A better private target already exists.** `ase-lab-sdc-001` is an **ASEv3 in ILB mode** (`internalLoadBalancingMode: "Web, Publishing"`) in `snet-ase` of this same VNet. An ILB App Service Environment is private by construction — no public endpoint to disable, no private endpoint to add. Deploying the Contoso Bank API to it gives the strongest possible version of Option A: the *same* application, reachable only from inside the VNet, with public engines failing and injected engines succeeding. Consider this **Option D** and prefer it over §23.4's Option A if the ASE can host the demo app.
+
+### 23.11.5 Running public and private in combination
+
+`subnetId` is a property of the **test definition**, not of the resource, so one Azure Load Testing resource happily holds both kinds at once. A single *run* is either injected or not — there is no hybrid run — so combine them at the definition level.
+
+**Pattern 1 — the 60-second proof (recommended for the session).** Two definitions, same scenario, same criteria:
+
+```powershell
+# public: no subnet, engines in Microsoft-managed networking
+az load test create --test-id contoso-bank-private-public-path `
+  --load-test-config-file loadtests/config/url-smoke.yaml `
+  --load-test-resource alt-loadtest-27d2e5 --resource-group rg-loadtest
+
+# private: identical, but injected into your subnet
+az load test create --test-id contoso-bank-private-vnet-path `
+  --load-test-config-file loadtests/config/url-smoke.yaml `
+  --subnet-id $subnet `
+  --load-test-resource alt-loadtest-27d2e5 --resource-group rg-loadtest
+```
+
+Once the target is private, run both back to back: the public one fails with connection/403 errors, the injected one passes. Same script, same criteria, same dashboard — the only variable is the network path. Then `pwsh -File tools/compare_runs.ps1 -RunIds <public-run>,<private-run>` puts the two side by side.
+
+**Pattern 2 — one definition, environment-specific injection.** Keep a single YAML in source control with no `subnetId`, and let the pipeline inject per environment:
+
+```bash
+az load test create --test-id contoso-bank-pr-gate \
+  --load-test-config-file loadtests/config/pr-gate.yaml \
+  ${SUBNET_ID:+--subnet-id "$SUBNET_ID"}
+```
+
+Dev/test stays public and cheap; the pre-production environment sets `SUBNET_ID` and the same test goes private. This keeps the repo free of environment-specific resource IDs — the same reason hostnames are retargeted rather than hard-coded.
+
+**Pattern 3 — public endpoint, allow-listed egress.** If the target must stay publicly addressable but only accept traffic from known IPs, associate a NAT Gateway with `snet-loadtest` and allow-list its public IP on the target (App Service access restrictions, App Gateway/WAF, or a firewall). Engines are injected for the *static egress address*, not for privacy. See §23.5's NAT Gateway path.
+
+**Pattern 4 — fully private, no service-created public resources.** Add `publicIPDisabled: true` (YAML) or `--disable-public-ip` (CLI) when policy forbids the injected public IP, load balancer and NSG. This requires an alternative egress route — NAT Gateway, Azure Firewall or an NVA — because the engines still need outbound access to the Azure endpoints listed in §23.3. This VNet already has `AzureFirewallSubnet` and `AzureFirewallManagementSubnet`, so that route is available here.
+
+### 23.11.6 Cleaning up the probe
+
+The verification test is disposable:
+
+```powershell
+az load test delete --load-test-resource alt-loadtest-27d2e5 --resource-group rg-loadtest --test-id scratch-private-probe --yes
+```
+
+---
+
+## 23.12 Citations and verification notes
 
 Current Microsoft Learn pages checked for this plan:
 

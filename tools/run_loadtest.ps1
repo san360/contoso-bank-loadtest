@@ -501,6 +501,17 @@ function Show-RunSummary {
         Write-Host "  throughput    : $(Get-ObjectPropertyValue $total 'throughput') req/s"
         Write-Host "  response ms   : mean $(Get-ObjectPropertyValue $total 'meanResTime') / p90 $(Get-ObjectPropertyValue $total 'pct1ResTime') / p95 $(Get-ObjectPropertyValue $total 'pct2ResTime') / p99 $(Get-ObjectPropertyValue $total 'pct3ResTime')"
     }
+    else {
+        # Observed on VNet-injected run vnet-probe-143704: testRunStatistics was
+        # still empty 10+ minutes after DONE while the metrics API and the results
+        # CSV both held the full 4,454 samples. Empty aggregates are not proof of
+        # an empty run - say where the real data is.
+        Write-Host ""
+        Write-Host "  statistics    : not published for this run (yet)." -ForegroundColor Yellow
+        Write-Host "                  The raw data is still available:" -ForegroundColor DarkGray
+        Write-Host "                  az load test-run metrics list --test-run-id $script:RunId --metric-namespace LoadTestRunMetrics --metric-name VirtualUsers ..." -ForegroundColor DarkGray
+        Write-Host "                  az load test-run download-files --test-run-id $script:RunId --path ./results --result --force ..." -ForegroundColor DarkGray
+    }
 
     if ($script:LoadTestResourceId) {
         Write-Host ""
