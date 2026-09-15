@@ -10,12 +10,12 @@ It contains a documented session agenda, a purpose-built banking API with delibe
 
 | Folder | Contents |
 |---|---|
-| [`docs/`](./docs) | The session agenda and presenter runbook — 19 numbered documents |
+| [`docs/`](./docs) | The session agenda and presenter runbook — 22 numbered documents (00–21) |
 | [`src/`](./src) | **Contoso Bank API** — the system under test |
 | [`loadtests/`](./loadtests) | JMeter, Locust, URL-based and cURL-based tests, plus YAML configs and test data |
 | [`infra/`](./infra) | Terraform IaC used by `azd up` |
 | [`.github/workflows/`](./.github/workflows) | GitHub Actions performance gate (OIDC, no stored secrets) |
-| [`tools/`](./tools) | `azd up` load-test provisioning hooks, [`e2e-test.ps1`](./tools/e2e-test.ps1) end-to-end validation, hostname retargeting, VUH costing, and the harness that proves the planted bottlenecks actually bite |
+| [`tools/`](./tools) | `azd up` load-test provisioning hooks, [`run_loadtest.ps1`/`.sh`](./tools) one-command test runners, [`e2e-test.ps1`](./tools/e2e-test.ps1) end-to-end validation, hostname retargeting, VUH costing, and the harness that proves the planted bottlenecks actually bite |
 
 ---
 
@@ -35,15 +35,23 @@ curl https://$SERVICE_API_HOSTNAME/health
 curl https://$SERVICE_API_HOSTNAME/admin/config    # should report "bottlenecked"
 ```
 
-Run the first test. The definition already exists because the `azd up` post-deploy hook created it:
+Run the first test. The definitions already exist because the `azd up` post-deploy hook created them — running one is a separate, explicit step because it spends virtual user hours:
+
+```powershell
+# See what is deployed (free, spends no VUH)
+pwsh -File tools/run_loadtest.ps1 -List
+
+# Start the cheap gate test, wait for it, print the verdict and the statistics
+pwsh -File tools/run_loadtest.ps1 -TestId contoso-bank-pr-gate -RunId demo-run-before
+```
 
 ```bash
-az load test-run create \
-  --load-test-resource $LOAD_TEST_NAME \
-  --resource-group $AZURE_RESOURCE_GROUP \
-  --test-id contoso-bank-peak-load \
-  --test-run-id demo-run-before
+# Same thing on macOS/Linux
+tools/run_loadtest.sh --list
+tools/run_loadtest.sh --test-id contoso-bank-pr-gate --run-id demo-run-before
 ```
+
+The runner resolves the Azure Load Testing resource from the azd environment, polls until the run finishes, derives the verdict from the pass/fail criteria (not the lagging `testResult` field), prints the breached criteria and the headline percentiles, and exits non-zero when a criterion is breached. Add `-DownloadResults` / `--download` for the CSV/JTL and the JMeter HTML report, `-Preset` / `--preset` to flip the app between `bottlenecked` and `optimized` before the run, or `-NoWait` / `--no-wait` to fire and forget. The raw `az load test-run create` path still works and is documented in [doc 17](./docs/17-portal-free-operations-and-observability.md).
 
 ---
 
@@ -115,6 +123,7 @@ Start with [`docs/00-agenda-and-runbook.md`](./docs/00-agenda-and-runbook.md).
 | 18 | [**Deploy and first run — hands-on walkthrough**](./docs/18-deploy-and-first-run.md) |
 | 19 | [Recording walkthrough and test catalog](./docs/19-recording-and-test-catalog.md) |
 | 20 | [Private network integration (VNet injection) — research](./docs/20-private-network-integration.md) |
+| 21 | [**Solution architecture — this repository, end to end**](./docs/21-solution-architecture.md) |
 
 Sections 02, 07, 11, 12, 13, 14, 17, 18 and 19 were added to the original agenda — see doc 00 for the rationale.
 

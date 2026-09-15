@@ -89,6 +89,8 @@ az load test-run download-files \
 
 > **Demo tip:** run step 3 in a `watch`-style loop so the audience sees `PROVISIONING → CONFIGURING → EXECUTING → DONE` tick past. It makes the state machine from §7.2 concrete instead of theoretical.
 
+> **The same four steps, one command:** [`tools/run_loadtest.sh`](../tools/run_loadtest.sh) (and [`tools/run_loadtest.ps1`](../tools/run_loadtest.ps1)) does exactly this sequence — start, poll, read both outcome fields, derive the verdict from the criteria, optionally `--download` the evidence — and exits non-zero on a breach, so it drops straight into a non-Azure scheduler or a cron job. Keep the raw commands above for the session; use the runner for real operations.
+
 ### 17.2.3 Gating on the result, not the status
 
 The single most important line in this whole section:

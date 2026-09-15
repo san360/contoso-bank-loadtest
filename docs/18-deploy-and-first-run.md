@@ -363,6 +363,20 @@ az load test-run create `
 
 > **Start with `pr-gate.yaml` (25 VUs, 3 min, 1 engine) for your very first run**, not `peak-load.yaml` (1,000 VUs, 15 min). Prove the plumbing works before spending 250 virtual user hours discovering you had a typo in the hostname.
 
+### Or do all of that with one command
+
+```powershell
+pwsh -File tools/run_loadtest.ps1 -List                                    # what is deployed
+pwsh -File tools/run_loadtest.ps1 -TestId contoso-bank-pr-gate -DownloadResults
+```
+
+```bash
+tools/run_loadtest.sh --list
+tools/run_loadtest.sh --test-id contoso-bank-pr-gate --download
+```
+
+The runner reads the azd environment itself, starts the run, polls until it finishes, derives the verdict from the pass/fail criteria, prints the breached criteria and the percentiles, and exits non-zero on a breach. Add `-Preset bottlenecked` / `--preset bottlenecked` to set the app state in the same command. The step-by-step CLI above remains the thing to *show* a customer; the runner is what you use when you just need the run.
+
 ### Wire up App Components — this is what makes it a *diagnosis*
 
 Without this you learn **that** it's slow. With it you learn **why**.

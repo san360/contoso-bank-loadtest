@@ -131,6 +131,8 @@ az load test-run create `
   --test-run-id "run-$(Get-Date -Format yyyyMMdd-HHmmss)"
 ```
 
+> **Shortcut for the live session:** `pwsh -File tools/run_loadtest.ps1 -TestId contoso-bank-peak-load` (or `tools/run_loadtest.sh --test-id ...`) wraps the two commands above, waits for the run, and prints the verdict, the breached criteria and the percentiles without leaving the terminal. `-List` shows every deployed definition and spends nothing.
+
 **Say out loud:** *"That YAML file is the entire test — script reference, data, secrets, scale, thresholds and monitoring. It's reviewed in a pull request like any other change. In ten minutes we'll run exactly this file from a pipeline."*
 
 ### 6.2.3 (Optional) Locust — the Python door
