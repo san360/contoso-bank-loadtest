@@ -1,0 +1,62 @@
+# =============================================================================
+# Contoso Bank - PRIVATE PATH (VNet-injected engines)
+# =============================================================================
+# The same five-request smoke scenario as loadtests/config/url-smoke.yaml, run
+# from test engines injected into YOUR virtual network instead of Microsoft-
+# managed networking.
+#
+# WHY THIS FILE LIVES OUTSIDE loadtests/config/
+# ---------------------------------------------
+# Everything in loadtests/config/ is created automatically by the `azd up`
+# postdeploy hook. This test cannot be, because it needs a subnet resource ID
+# that is specific to the environment it runs in and must never be hard-coded in
+# source control. Create it explicitly instead:
+#
+#   pwsh -File tools/provision_private_loadtest.ps1 -SubnetId "<subnet-resource-id>"
+#
+# That script pre-flights the subnet against every documented requirement before
+# it creates anything - see docs/23 section 23.11.
+#
+# WHY IT REUSES THE PUBLIC SCENARIO'S REQUEST FILE
+# ------------------------------------------------
+# testPlan points at the SAME ../url-tests/contoso-bank-smoke.json that
+# contoso-bank-url-smoke uses. That is deliberate and it is the whole demo:
+#
+#   - identical requests, identical failure criteria, identical engine count
+#   - the ONLY difference between the two tests is the network path
+#
+# When the App Service is private (public access disabled + private endpoint),
+# the hostname does not change - it simply resolves to a private IP inside the
+# VNet. So the public test starts failing while this one keeps passing, and
+# nobody can argue the scripts were different.
+#
+# Compare the two runs afterwards:
+#   pwsh -File tools/compare_runs.ps1 -RunIds <public-run-id>,<private-run-id>
+#
+# NOTE: `subnetId` and `publicIPDisabled` are deliberately NOT set here. The
+# provisioning script passes them as CLI arguments so this file stays portable
+# across environments.
+# =============================================================================
+
+version: v0.1
+
+testId: contoso-bank-private-vnet
+displayName: Contoso Bank - Private path (VNet injected)
+description: Same smoke scenario as url-smoke, executed from engines inside the VNet.
+
+testType: URL
+testPlan: ../url-tests/contoso-bank-smoke.json
+
+engineInstances: 1
+splitAllCSVs: false
+
+# Identical to url-smoke.yaml on purpose. If you change one, change both, or the
+# public-versus-private comparison stops being a like-for-like comparison.
+failureCriteria:
+  clientMetrics:
+    - avg(response_time_ms) > 500
+    - percentage(error) > 5
+
+autoStop:
+  errorPercentage: 90
+  timeWindow: 60

@@ -12,10 +12,10 @@ It contains a documented session agenda, a purpose-built banking API with delibe
 |---|---|
 | [`docs/`](./docs) | The session agenda and presenter runbook — 26 numbered documents (00–25) |
 | [`src/`](./src) | **Contoso Bank API** — the system under test |
-| [`loadtests/`](./loadtests) | JMeter, Locust, URL-based and cURL-based tests, plus YAML configs and test data |
+| [`loadtests/`](./loadtests) | JMeter, Locust, URL-based and cURL-based tests, plus YAML configs and test data. [`config-private/`](./loadtests/config-private) holds the VNet-injected definition, kept out of the auto-provisioned set because it needs an environment-specific subnet ID |
 | [`infra/`](./infra) | Terraform IaC used by `azd up` |
 | [`.github/workflows/`](./.github/workflows) | GitHub Actions performance gate (OIDC, no stored secrets) |
-| [`tools/`](./tools) | `azd up` load-test provisioning hooks, [`run_loadtest.ps1`/`.sh`](./tools) one-command test runners, [`compare_runs.ps1`](./tools/compare_runs.ps1) before/after run comparison, [`e2e-test.ps1`](./tools/e2e-test.ps1) end-to-end validation, hostname retargeting, VUH costing, and the harness that proves the planted bottlenecks actually bite |
+| [`tools/`](./tools) | `azd up` load-test provisioning hooks, [`run_loadtest.ps1`/`.sh`](./tools) one-command test runners, [`provision_private_loadtest.ps1`](./tools/provision_private_loadtest.ps1) VNet-injected test with subnet pre-flight, [`compare_runs.ps1`](./tools/compare_runs.ps1) before/after run comparison, [`e2e-test.ps1`](./tools/e2e-test.ps1) end-to-end validation, hostname retargeting, VUH costing, and the harness that proves the planted bottlenecks actually bite |
 
 ---
 

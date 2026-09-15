@@ -714,12 +714,100 @@ Dev/test stays public and cheap; the pre-production environment sets `SUBNET_ID`
 
 **Pattern 4 — fully private, no service-created public resources.** Add `publicIPDisabled: true` (YAML) or `--disable-public-ip` (CLI) when policy forbids the injected public IP, load balancer and NSG. This requires an alternative egress route — NAT Gateway, Azure Firewall or an NVA — because the engines still need outbound access to the Azure endpoints listed in §23.3. This VNet already has `AzureFirewallSubnet` and `AzureFirewallManagementSubnet`, so that route is available here.
 
-### 23.11.6 Cleaning up the probe
+### 23.11.6 What the "disable public IP" checkbox actually means
 
-The verification test is disposable:
+
+
+The portal text is:
+
+> *Selecting this will disable deployment of Public IP, Load balancer and Network Security Group in the subnet. Ensure that outbound traffic is allowed to the Azure Load Testing service from the subnet.*
+
+This is the `publicIPDisabled: true` YAML key, or `--disable-public-ip` on the CLI. Read it as two separate statements.
+
+**Statement 1 — what stops being created.** When a private test runs, Azure Load Testing normally injects four things into your subnet for the lifetime of the run: the **engine VMs**, a **public IP**, an **Azure Load Balancer** and an **NSG**. You saw three of them in §23.11.2 as `…-azurebatch-cloudserviceloadbalancer`, appearing during the run and disappearing afterwards. Ticking the box suppresses the public IP, the load balancer and the NSG. The engine VMs are still injected — that is the whole point — so the *test* still runs from inside your network.
+
+**Statement 2 — what you must now provide yourself, or the run fails.** Those suppressed resources were how the engines reached the outside world. The engines always need outbound access to the Azure Load Testing service itself, plus Azure storage and related endpoints (§23.3), to fetch the test plan, stream metrics and upload results. Remove the service's egress path and you must supply your own: **NAT Gateway**, **Azure Firewall**, or an **NVA**, reachable via the subnet's route table.
+
+| | `publicIPDisabled: false` (default) | `publicIPDisabled: true` |
+|---|---|---|
+| Public IP + load balancer + NSG in your subnet | Created during the run, deleted after | Never created |
+| Engine VMs in your subnet | Yes | Yes |
+| Outbound path for engines | Provided by the injected resources | **You must provide it** |
+| Needs a public IP quota | Yes, at least one | No |
+| Survives a policy that denies public IPs | No — the run fails at provisioning | Yes |
+| Extra cost | Load balancer + public IP for the run's duration | Whatever your NAT Gateway / Firewall costs |
+
+So the plain-English version: **"Don't put any of your networking plumbing in my subnet — I'll provide the route out myself."** Tick it when corporate policy forbids service-created public IPs or load balancers. Leave it unticked for the fastest path, which is what this kit's verified probe used.
+
+This VNet already has `AzureFirewallSubnet` and `AzureFirewallManagementSubnet`, so the alternative-egress route is available here — but confirm the firewall actually allows the §23.3 destinations before ticking the box, otherwise the failure looks like an unexplained `status: FAILED` with no samples.
+
+### 23.11.7 Choosing the private target: ASE, private endpoint, Container Apps or App Gateway
+
+The injected-engine half is solved. The remaining decision is **what the engines should talk to**. Injecting engines while the target stays public proves the engines are in your network; it proves **nothing** about the application being private. For the demo to mean anything, the target's public path must actually be closed.
+
+Approximate list prices, Sweden Central, **⚠️ verify against your rate card** — they move, and the ratios matter more than the absolute numbers:
+
+| Option | Roughly what it costs | Effort | Demo strength | Verdict |
+|---|---|---|---|---|
+| **A. Private endpoint on the existing App Service** | Private endpoint ≈ **$0.01–0.025/hr** (~$7–18/month) + data processing; private DNS zone is pennies | **Low** — a private endpoint, a private DNS zone, a zone link, and switch off public access. No app redeployment | **Highest.** Same app, same hostname, same test file. Public path dies; injected path keeps working | ✅ **Recommended** |
+| **B. Deploy the app to the existing ILB ASE** (`ase-lab-sdc-001`) | Isolated v2 worker ≈ **$0.514/hr** (~$375/month) per instance — you already pay the ASE, but the app needs a plan on it | **Medium** — new App Service plan on the ASE, redeploy the app, azd/Terraform changes, ASE DNS | Very high. Private by construction, no public endpoint to disable | Only if the ASE is already funded **and** you want an "enterprise-grade isolation" narrative |
+| **C. Internal Container Apps environment** | Environment + workload profile ≈ **$0.01–0.04/hr** upwards, plus you must build and host an image | **High** — containerise the FastAPI app, registry, image lifecycle. None of your five existing environments is VNet-injected today | Good, but the work is about containers, not about load testing | ❌ Not for a half-day session |
+| **D. Public Container App fronted by Application Gateway** | App Gateway Standard_v2 ≈ **$0.246/hr fixed** (~$180/month) + capacity units, on top of C | **Highest** | Weakest of the four — the app stays publicly reachable behind the gateway, so "private" becomes an allow-list story, not an isolation story | ❌ Most expensive *and* least convincing |
+
+**Recommendation: A.** It is the cheapest by an order of magnitude, the least work, and — because the hostname does not change when App Service goes private — the *only* option where the public and private tests can share a byte-identical request file. That is what makes the comparison unarguable in front of a security architect.
+
+If you want the ASE story as well, treat it as a **follow-up**, not the primary path: A first, B later if the customer asks "what about full isolation?".
+
+On your specific phrasing — *"keep the VNet-injected test for the subnet but connect to the public endpoint"* — that is fine as a **rehearsal** (it is exactly what §23.11.2 verified, and it de-risks the networking before you touch the app). It is **not** a demo. State plainly on stage that injection alone proves engine placement; only disabling public access proves privacy.
+
+### 23.11.8 The committed private test
+
+The private path is now a first-class, repeatable part of the kit rather than an ad-hoc CLI command.
+
+| File | Purpose |
+|---|---|
+| [`loadtests/config-private/private-vnet.yaml`](../loadtests/config-private/private-vnet.yaml) | Test definition `contoso-bank-private-vnet`. Deliberately **outside** `loadtests/config/` so the `azd up` hook never tries to create it without a subnet |
+| [`tools/provision_private_loadtest.ps1`](../tools/provision_private_loadtest.ps1) | Pre-flights the subnet, then creates or updates the test with `--subnet-id` |
+
+It reuses `../url-tests/contoso-bank-smoke.json` — **the same request file as the public `contoso-bank-url-smoke`** — with the same failure criteria and the same engine count. The only difference between the two tests is the network path, which is exactly what makes the comparison honest.
+
+```powershell
+# create it against a subnet you already own
+pwsh -File tools/provision_private_loadtest.ps1 -SubnetId "<subnet-resource-id>"
+
+# run both paths and compare
+pwsh -File tools/run_loadtest.ps1 -TestId contoso-bank-private-vnet -RunId private-after
+pwsh -File tools/run_loadtest.ps1 -TestId contoso-bank-url-smoke   -RunId public-after
+pwsh -File tools/compare_runs.ps1 -RunIds public-after,private-after
+```
+
+The pre-flight refuses to create a test that would fail later, and names the reason. Verified both ways on 2026-09-15:
+
+```text
+# against the delegated Container Apps subnet - correctly refused
+[FAIL] not delegated to a service    delegated to Microsoft.App/environments - pick a different subnet
+Pre-flight failed. Fix these before creating the private test.
+
+# against snet-loadtest - all checks green, test created
+[OK] not delegated to a service      no delegations
+[OK] enough free IPv4 addresses      10.64.8.0/23 -> 507 usable, 1 in use, 506 free
+[OK] same region as load test resource   vnet=swedencentral, loadtest=swedencentral
+[OK] Microsoft.Batch registered      Registered
+```
+
+The resulting test was then executed end to end through the injected subnet — run `private-vnet-145642`: `DONE`, 2,438 samples, 12.9 req/s, verdict `FAILED` on 2 of 2 criteria (`percentage(error)` 18.01% and `avg(response_time_ms)` 3419 ms). The failure is the **bottlenecked application** doing what it is designed to do, not a networking problem: the requests reached the app and were answered.
+
+`-DisablePublicIP` maps to the checkbox explained in §23.11.6 and adds a warning to the pre-flight output, because with no alternative egress the run fails with no samples and a bare `status: FAILED`.
+
+
+
+### 23.11.9 Cleaning up the probes
+
+The verification tests are disposable. The committed `contoso-bank-private-vnet` is not — keep that one:
 
 ```powershell
 az load test delete --load-test-resource alt-loadtest-27d2e5 --resource-group rg-loadtest --test-id scratch-private-probe --yes
+az load test delete --load-test-resource alt-loadtest-27d2e5 --resource-group rg-loadtest --test-id scratch-url-portal-probe --yes
 ```
 
 ---
