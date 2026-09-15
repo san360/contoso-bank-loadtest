@@ -76,6 +76,29 @@ Open an existing JMeter-based test and walk the tabs. This is the "feature overv
 ### Test plan
 Script + supporting files. Mention the **`splitAllCSVs`** option: with 10 engines and a 10,000-row customer CSV, each engine gets a distinct 1,000 rows — no duplicate logins, no artificially warm caches. *This is a detail that signals maturity to a performance engineer.*
 
+> ### ⚠️ Do not open **Edit** on a URL-based test that this kit created
+>
+> Every URL test in this repo (`url-basic`, `url-smoke`, `url-curl`, `url-false-green`) is created from a requests JSON file by the CLI. If you click **Edit → Test plan** on one of them, the portal shows an **empty request list and a red "Add at least one request to the test plan"** — on stage, mid-demo, on a test that works perfectly.
+>
+> **Nothing is missing from the test.** Verified on `contoso-bank-url-basic` (2026-09-15):
+>
+> | Check | Result |
+> |---|---|
+> | `kind` | `URL`, `quickStartTest: false` |
+> | `inputArtifacts.urlTestConfigFileInfo` | `contoso-bank-basic.json`, `fileType: URL_TEST_CONFIG`, **`VALIDATION_SUCCESS`** |
+> | Stored file contents | byte-identical to [`loadtests/url-tests/contoso-bank-basic.json`](../loadtests/url-tests/contoso-bank-basic.json), one `GetBalance` request |
+> | Generated `url_test.jmx` | contains `<HTTPSamplerProxy testname="GetBalance">` → `/api/accounts/ACC-1001/balance` |
+> | Data plane `GET /tests/{testId}` | **no inline `requests` property exists on the test object at all** |
+> | Last run | `DONE`, **4,390 samples**, 0% errors |
+>
+> The requests live only in the uploaded JSON file. The portal's no-code editor builds its request list from its own UI model and does not hydrate it from a CLI-uploaded requests JSON, so the list renders empty for any URL test created as code.
+>
+> **Consequences for the session:**
+> - Demo the URL test by **running** it and showing the dashboard — never by opening **Edit**.
+> - Treat **Apply/Save** in that editor as destructive: saving a test plan the editor believes is empty risks overwriting a working definition. If anyone does click it, re-run `pwsh -File tools/provision_loadtests.ps1` to restore the definition from source.
+> - To edit a URL test's requests, change the JSON in [`loadtests/url-tests/`](../loadtests/url-tests) and re-run the provisioning hook. That is the intended as-code workflow — and it is the honest answer to "can we manage this without the portal?"
+> - If a customer wants to see the requests *in the portal*, build one throwaway test through the portal UI. Portal-built and code-built tests are both first-class; only the editor view differs.
+
 ### Parameters
 | Type | Use |
 |---|---|
