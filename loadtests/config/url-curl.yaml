@@ -14,7 +14,8 @@
 # Note the load profile (virtual users, ramp, duration) lives in the requests
 # JSON `testSetup` block, NOT here - that is specific to URL-based tests.
 #
-# Limitation to be honest about: URL tests are capped at five requests and have
+# Limitation to be honest about: URL tests are capped at a small number of requests
+# (the portal editor says 15, Learn still says five - verify) and have
 # no scripting logic. They are NOT limited to static sequences - response
 # variables give you correlated, dependent requests, and they work in cURL
 # requests too. See loadtests/config/url-correlated.yaml and docs/13 section 13.6.

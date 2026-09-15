@@ -76,28 +76,34 @@ Open an existing JMeter-based test and walk the tabs. This is the "feature overv
 ### Test plan
 Script + supporting files. Mention the **`splitAllCSVs`** option: with 10 engines and a 10,000-row customer CSV, each engine gets a distinct 1,000 rows — no duplicate logins, no artificially warm caches. *This is a detail that signals maturity to a performance engineer.*
 
-> ### ⚠️ Do not open **Edit** on a URL-based test that this kit created
+> ### ⚠️ The portal's request editor is not a reliable view of a code-created URL test
 >
-> Every URL test in this repo (`url-basic`, `url-smoke`, `url-curl`, `url-false-green`) is created from a requests JSON file by the CLI. If you click **Edit → Test plan** on one of them, the portal shows an **empty request list and a red "Add at least one request to the test plan"** — on stage, mid-demo, on a test that works perfectly.
+> Every URL test in this repo is created from a requests JSON file by the CLI. Opening **Edit → Test plan** on one can show **fewer requests than the test actually contains — including none at all**. The test is fine; the editor is not showing you the truth.
 >
-> **Nothing is missing from the test.** Verified on `contoso-bank-url-basic` (2026-09-15):
+> **Two measured cases (2026-09-15), same resource, same day:**
+>
+> | Test | Requests in the stored JSON | Requests the portal editor listed |
+> |---|---:|---|
+> | `contoso-bank-url-basic` | 1 | **0** — red "Add at least one request to the test plan" |
+> | `contoso-bank-url-correlated` | 3 | **2** — `GetTransferById` silently missing |
+>
+> In the second case the missing row was the URL-type request whose endpoint contains a variable (`/api/transfers/${transferId}`). The cURL request using the *same* variable rendered fine, because its command is an opaque string to the editor. So the editor appears to drop rows it cannot map onto its own UI model, silently and without any warning.
+>
+> **The tests themselves are complete.** For `contoso-bank-url-correlated`, verified:
 >
 > | Check | Result |
 > |---|---|
-> | `kind` | `URL`, `quickStartTest: false` |
-> | `inputArtifacts.urlTestConfigFileInfo` | `contoso-bank-basic.json`, `fileType: URL_TEST_CONFIG`, **`VALIDATION_SUCCESS`** |
-> | Stored file contents | byte-identical to [`loadtests/url-tests/contoso-bank-basic.json`](../loadtests/url-tests/contoso-bank-basic.json), one `GetBalance` request |
-> | Generated `url_test.jmx` | contains `<HTTPSamplerProxy testname="GetBalance">` → `/api/accounts/ACC-1001/balance` |
-> | Data plane `GET /tests/{testId}` | **no inline `requests` property exists on the test object at all** |
-> | Last run | `DONE`, **4,390 samples**, 0% errors |
->
-> The requests live only in the uploaded JSON file. The portal's no-code editor builds its request list from its own UI model and does not hydrate it from a CLI-uploaded requests JSON, so the list renders empty for any URL test created as code.
+> | Stored `URL_TEST_CONFIG` | **3** requests, `VALIDATION_SUCCESS` |
+> | Generated `url_test.jmx` | **3** samplers: `CreateTransfer`, `GetTransferById`, `GetTransferByIdCurl` |
+> | Run `correlated-fixed-153140` | **3** labels executed: 1,540 × `201`, 1,520 × `200`, 1,520 × `200`, 0% errors |
 >
 > **Consequences for the session:**
-> - Demo the URL test by **running** it and showing the dashboard — never by opening **Edit**.
-> - Treat **Apply/Save** in that editor as destructive: saving a test plan the editor believes is empty risks overwriting a working definition. If anyone does click it, re-run `pwsh -File tools/provision_loadtests.ps1` to restore the definition from source.
-> - To edit a URL test's requests, change the JSON in [`loadtests/url-tests/`](../loadtests/url-tests) and re-run the provisioning hook. That is the intended as-code workflow — and it is the honest answer to "can we manage this without the portal?"
-> - If a customer wants to see the requests *in the portal*, build one throwaway test through the portal UI. Portal-built and code-built tests are both first-class; only the editor view differs.
+> - Demo URL tests by **running** them and showing the dashboard — never by opening **Edit**.
+> - Treat **Apply/Save** in that editor as destructive: saving a plan the editor has already dropped rows from risks writing that truncated view back. If anyone clicks it, restore with `pwsh -File tools/provision_loadtests.ps1`.
+> - Verify from the API, not the blade: `az load test show --test-id <id> --query "inputArtifacts.urlTestConfigFileInfo.validationStatus"`, then check the request count in the run's results.
+> - To edit requests, change the JSON in [`loadtests/url-tests/`](../loadtests/url-tests) and re-run the provisioning hook.
+>
+> **Request cap — the portal and the docs disagree.** The portal editor states *"You can add up to 15 requests in a test"*, while Microsoft Learn still says five. ⚠️ Re-confirm before quoting either number to a customer; if you need the limit to be load-bearing in an argument, test it.
 
 ### Parameters
 | Type | Use |

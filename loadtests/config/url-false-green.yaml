@@ -6,7 +6,7 @@
 # no failure criteria.
 #
 # This is a URL-based test on purpose. The demo needs one static request to a
-# known-bad route, not a correlated journey; URL tests are capped at five
+# known-bad route, not a correlated journey; URL tests are capped at a small
 # requests, and this one uses only one. Azure Load Testing generates the JMeter
 # plan from ../url-tests/contoso-bank-false-green.json.
 #

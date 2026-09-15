@@ -192,7 +192,23 @@ The root cause that time was upstream: `CreateTransfer` was returning `422 Insuf
 - Transfer **trivial amounts** (`amount_minor: 1`) in correlated tests so balances survive repeated runs.
 - Reset the demo data before a run that moves money: `pwsh -File tools/run_loadtest.ps1 -TestId contoso-bank-url-correlated -ResetData`.
 
-### 13.6.6 When to use it — and when to reach for JMeter instead
+### 13.6.6 The portal editor hides some of these requests — the test is still fine
+
+Opening **Edit → Test plan** on this test in the portal lists only **two** of its three requests: `CreateTransfer` and `GetTransferByIdCurl`. `GetTransferById` — the URL-type request whose endpoint is `/api/transfers/${transferId}` — is silently absent.
+
+Nothing is wrong with the test. Verified on 2026-09-15:
+
+| Check | Result |
+|---|---|
+| Stored `URL_TEST_CONFIG` | 3 requests, `VALIDATION_SUCCESS` |
+| Generated `url_test.jmx` | 3 samplers, including `GetTransferById` |
+| Run `correlated-fixed-153140` | 3 labels executed, 1,520 × `200` on `GetTransferById` |
+
+The pattern, as far as it has been measured: the editor renders a plain URL request and a cURL request (whose command is an opaque string to it), but drops a **URL request with a variable in the endpoint**. It gives no warning that it has done so.
+
+So: **do not use the portal editor to review or edit a correlated test**, and never press **Apply** there — see [doc 04 §4.4](04-portal-feature-walkthrough.md). Review the JSON in source control instead, and prove behaviour by running the test and reading the per-request results.
+
+### 13.6.7 When to use it — and when to reach for JMeter instead
 
 **Use response variables when:**
 
@@ -203,12 +219,12 @@ The root cause that time was upstream: `CreateTransfer` was returning `422 Insuf
 
 **Reach for JMeter or Locust when:**
 
-- the journey needs more than **five requests** (the URL-based limit)
+- the journey needs more requests than a URL test allows (⚠️ the portal editor states **15**, Microsoft Learn still says **five** — verify before quoting a number)
 - you need conditional logic, loops, or arithmetic between steps
 - you need custom assertions beyond status codes, or protocol support beyond HTTP
 - you need plugins, or bespoke think-time distributions
 
-> **Correction to an earlier claim in this kit:** `url-smoke.yaml` and `url-curl.yaml` used to say the correlated transfer flow "needs the JMX or Locust flavour". That is wrong, and the measured run above disproves it. The real URL-based limits are the five-request cap and the absence of scripting logic — not correlation.
+> **Correction to an earlier claim in this kit:** `url-smoke.yaml` and `url-curl.yaml` used to say the correlated transfer flow "needs the JMX or Locust flavour". That is wrong, and the measured run above disproves it. The real URL-based limits are the request cap and the absence of scripting logic — not correlation.
 
 ---
 

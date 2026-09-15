@@ -207,7 +207,7 @@ This is the sequence that converts the demo from *interesting* to *funded*. It's
 Use the checked-in URL test [`../loadtests/config/url-false-green.yaml`](../loadtests/config/url-false-green.yaml):
 
 - **Test id:** `contoso-bank-url-false-green`
-- **Type:** URL test, because the moment needs one static known-bad request, not a correlated JMeter journey. URL tests are capped at five requests; this one uses only one.
+- **Type:** URL test, because the moment needs one static known-bad request, not a correlated JMeter journey. URL tests are capped at a small number of requests (⚠️ the portal says 15, Learn says five — verify); this one uses only one.
 - **Endpoint:** `/api/false-green-404`, a deliberately nonexistent API route that returns HTTP 404.
 - **Load profile:** 1 engine, 10 virtual users, 10s ramp, 60s duration. The profile lives in [`../loadtests/url-tests/contoso-bank-false-green.json`](../loadtests/url-tests/contoso-bank-false-green.json), not in the YAML.
 - **No `failureCriteria`:** deliberately omitted.
