@@ -35,6 +35,21 @@ DOWNLOAD=0
 OUTPUT_DIR=""
 TIMEOUT_MINUTES=40
 
+MAX_RUN_ID_LENGTH=50
+
+default_run_id() {
+    # Azure Load Testing caps testRunId at 50 characters, so long test ids have to
+    # give way to the timestamp - the timestamp is what makes the id unique.
+    stamp=$(date -u +%Y%m%d-%H%M%S)
+    budget=$((MAX_RUN_ID_LENGTH - ${#stamp} - 1))
+    prefix=$1
+    if [ ${#prefix} -gt "$budget" ]; then
+        prefix=$(printf '%s' "$prefix" | cut -c1-"$budget")
+    fi
+    prefix=$(printf '%s' "$prefix" | sed 's/-*$//')
+    printf '%s-%s' "$prefix" "$stamp"
+}
+
 usage() {
     cat <<'EOF'
 Usage: tools/run_loadtest.sh [--test-id <id>] [options]
@@ -226,7 +241,13 @@ if [ -n "$PRESET" ]; then
     set_app_preset "$PRESET"
 fi
 
-[ -n "$RUN_ID" ] || RUN_ID="$TEST_ID-$(date -u +%Y%m%d-%H%M%S)"
+[ -n "$RUN_ID" ] || RUN_ID=$(default_run_id "$TEST_ID")
+
+# The service rejects anything longer than 50 characters with a generic
+# InvalidRequest. Fail here instead, where the message can say what to do.
+if [ ${#RUN_ID} -gt "$MAX_RUN_ID_LENGTH" ] || [ ${#RUN_ID} -lt 2 ]; then
+    fail "Run id '$RUN_ID' is ${#RUN_ID} characters. Azure Load Testing requires 2-$MAX_RUN_ID_LENGTH. Pass a shorter --run-id."
+fi
 
 say_step "Starting run '$RUN_ID' for test '$TEST_ID'"
 printf "  This spends virtual user hours. Estimate the cost with 'python tools/vuh_calculator.py' if you need to.\n"

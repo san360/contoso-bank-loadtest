@@ -79,6 +79,7 @@ $global:LASTEXITCODE = 0
 
 $script:RepoRoot = Split-Path -Parent $PSScriptRoot
 $script:AzdValues = $null
+$script:MaxRunIdLength = 50
 
 function Write-Step {
     param([string]$Message)
@@ -275,6 +276,17 @@ function Set-AppPreset {
     Start-Sleep -Seconds 5
 }
 
+function New-DefaultRunId {
+    param([Parameter(Mandatory = $true)][string]$TestId)
+
+    # Azure Load Testing caps testRunId at 50 characters, so long test ids have to
+    # give way to the timestamp - the timestamp is what makes the id unique.
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $budget = $script:MaxRunIdLength - ($stamp.Length + 1)
+    $prefix = if ($TestId.Length -gt $budget) { $TestId.Substring(0, $budget) } else { $TestId }
+    return "$($prefix.TrimEnd('-'))-$stamp"
+}
+
 function Wait-TestRun {
     param([Parameter(Mandatory = $true)][string]$RunIdToWatch, [int]$TimeoutMinutes)
 
@@ -424,7 +436,14 @@ try {
 
     if ($Preset) { Set-AppPreset -PresetName $Preset }
 
-    $script:RunId = if ([string]::IsNullOrWhiteSpace($RunId)) { "$($script:TestId)-$(Get-Date -Format 'yyyyMMdd-HHmmss')" } else { $RunId }
+    $script:RunId = if ([string]::IsNullOrWhiteSpace($RunId)) { New-DefaultRunId -TestId $script:TestId } else { $RunId }
+
+    # The service rejects anything longer than 50 characters with a generic
+    # InvalidRequest, after the run has already been accepted as a command.
+    # Fail here instead, where the message can say what to do about it.
+    if ($script:RunId.Length -gt $script:MaxRunIdLength -or $script:RunId.Length -lt 2) {
+        throw "Run id '$($script:RunId)' is $($script:RunId.Length) characters. Azure Load Testing requires 2-$($script:MaxRunIdLength). Pass a shorter -RunId."
+    }
 
     Write-Step "Starting run '$($script:RunId)' for test '$($script:TestId)'"
     Write-Host "  This spends virtual user hours. Estimate the cost with 'python tools/vuh_calculator.py' if you need to."
