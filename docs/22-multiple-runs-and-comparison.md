@@ -325,6 +325,22 @@ pwsh -File tools\compare_runs.ps1 -TestId contoso-bank-pr-gate -Last 2
 
 It resolves `LOAD_TEST_NAME`, `AZURE_RESOURCE_GROUP` and `AZURE_SUBSCRIPTION_ID` the same way as `tools\run_loadtest.ps1`: parameters first, then environment variables, then `azd env get-values`.
 
+### 22.5.3 Producing a full set of runs to compare
+
+To capture one run of **every** deployed definition in a single command — for a release baseline, or to sanity-check the whole catalogue before a session — use the runner's batch mode:
+
+```powershell
+pwsh -File tools\run_loadtest.ps1 -All
+```
+
+```bash
+tools/run_loadtest.sh --all
+```
+
+It enumerates the definitions deployed in the resource, runs them **sequentially, cheapest first** (fewest engine instances), gives each run its own generated id, and prints a summary table of test id, run id, status, verdict and duration. A failing run does not abandon the batch, and the command exits non-zero if any run did not pass — so it doubles as a nightly catalogue check. Combine it with `-Preset bottlenecked` / `--preset bottlenecked` to pin the application state for the whole batch.
+
+> **Cost warning:** `-All` runs every definition, including the 1,000-VU peak tests. Price it with `python tools/vuh_calculator.py --preset all` before you run it in a shared subscription.
+
 ---
 
 ## 22.6 Trend and regression over time

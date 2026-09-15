@@ -43,15 +43,19 @@ pwsh -File tools/run_loadtest.ps1 -List
 
 # Start the cheap gate test, wait for it, print the verdict and the statistics
 pwsh -File tools/run_loadtest.ps1 -TestId contoso-bank-pr-gate -RunId demo-run-before
+
+# Or run every deployed definition, cheapest first, with a summary table at the end
+pwsh -File tools/run_loadtest.ps1 -All
 ```
 
 ```bash
 # Same thing on macOS/Linux
 tools/run_loadtest.sh --list
 tools/run_loadtest.sh --test-id contoso-bank-pr-gate --run-id demo-run-before
+tools/run_loadtest.sh --all
 ```
 
-The runner resolves the Azure Load Testing resource from the azd environment, polls until the run finishes, derives the verdict from the pass/fail criteria (not the lagging `testResult` field), prints the breached criteria and the headline percentiles, and exits non-zero when a criterion is breached. Add `-DownloadResults` / `--download` for the CSV/JTL and the JMeter HTML report, `-Preset` / `--preset` to flip the app between `bottlenecked` and `optimized` before the run, or `-NoWait` / `--no-wait` to fire and forget. The raw `az load test-run create` path still works and is documented in [doc 17](./docs/17-portal-free-operations-and-observability.md).
+The runner resolves the Azure Load Testing resource from the azd environment, polls until the run finishes, **waits for the pass/fail verdict to settle** (measured at ~97 seconds after `DONE` — reading it earlier reports a false green, see [doc 07 §7.2.4](./docs/07-analyzing-results-and-bottlenecks.md)), prints the breached criteria and the headline percentiles, and exits non-zero on anything short of proof of a pass. Add `-DownloadResults` / `--download` for the CSV/JTL and the JMeter HTML report, `-Preset` / `--preset` to flip the app between `bottlenecked` and `optimized` before the run, `-All` / `--all` to run every deployed definition sequentially, or `-NoWait` / `--no-wait` to fire and forget. Compare any two runs afterwards with [`tools/compare_runs.ps1`](./tools/compare_runs.ps1). The raw `az load test-run create` path still works and is documented in [doc 17](./docs/17-portal-free-operations-and-observability.md).
 
 ---
 

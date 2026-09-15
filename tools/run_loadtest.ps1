@@ -20,9 +20,17 @@
     The test definition to run, e.g. contoso-bank-peak-load. Use -List to see them all.
 
 .PARAMETER RunId
-    Optional test run id. Defaults to "<testId>-yyyyMMdd-HHmmss". Run ids are unique
-    per resource and become the audit record, so pick something meaningful for a demo
+    Optional test run id. Defaults to "<testId>-yyyyMMdd-HHmmss", truncated to the
+    50-character limit Azure Load Testing enforces. Run ids are unique per resource
+    and become the audit record, so pick something meaningful for a demo
     (for example demo-run-before / demo-run-after).
+
+.PARAMETER All
+    Run every test definition deployed in the resource, one after another, cheapest
+    first (fewest engine instances). Each run gets its own generated run id, a
+    failing run does not abandon the batch, and a summary table is printed at the
+    end. Exits non-zero if any run did not pass. This spends real virtual user
+    hours across every definition - check the cost first.
 
 .PARAMETER List
     List the available test definitions and exit without spending any VUH.
@@ -52,16 +60,22 @@
 .EXAMPLE
     pwsh -File tools/run_loadtest.ps1 -TestId contoso-bank-pr-gate -Preset bottlenecked -RunId demo-run-before -DownloadResults
 
+.EXAMPLE
+    pwsh -File tools/run_loadtest.ps1 -All -TimeoutMinutes 45
+
 .NOTES
     Exit codes: 0 = run completed and no criterion failed (or -NoWait / -List),
-                1 = run failed, was cancelled, breached a criterion, or the script errored,
+                1 = run failed, was cancelled, breached a criterion, could not be
+                    judged (UNSETTLED / NO_VERDICT), or the script errored,
                 2 = the run did not reach a terminal state before -TimeoutMinutes.
+                With -All, 1 means at least one run in the batch did not pass.
 #>
 
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)][string]$TestId,
     [string]$RunId,
+    [switch]$All,
     [switch]$List,
     [ValidateSet('bottlenecked', 'optimized')][string]$Preset,
     [switch]$NoWait,
@@ -511,6 +525,141 @@ function Save-RunArtefacts {
     Write-Host "  [OK] $($files.Count) file(s) in $Destination"
 }
 
+function Invoke-TestRun {
+    <#
+      Runs one test definition end to end and returns a summary object. Kept
+      separate from the main block so -All can loop over it without duplicating
+      the start / wait / settle / report / download sequence.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$TestIdToRun,
+        [string]$ExplicitRunId,
+        [int]$TimeoutMinutes = 40,
+        [switch]$DownloadArtefacts,
+        [string]$Destination
+    )
+
+    $script:TestId = $TestIdToRun
+    $started = Get-Date
+
+    $runIdForTest = if ([string]::IsNullOrWhiteSpace($ExplicitRunId)) { New-DefaultRunId -TestId $TestIdToRun } else { $ExplicitRunId }
+
+    # The service rejects anything outside 2-50 characters with a generic
+    # InvalidRequest, after the run has already been accepted as a command.
+    # Fail here instead, where the message can say what to do about it.
+    if ($runIdForTest.Length -gt $script:MaxRunIdLength -or $runIdForTest.Length -lt 2) {
+        throw "Run id '$runIdForTest' is $($runIdForTest.Length) characters. Azure Load Testing requires 2-$($script:MaxRunIdLength). Pass a shorter -RunId."
+    }
+    $script:RunId = $runIdForTest
+
+    Write-Step "Starting run '$($script:RunId)' for test '$TestIdToRun'"
+    Write-Host "  This spends virtual user hours. Estimate the cost with 'python tools/vuh_calculator.py' if you need to."
+
+    $start = Invoke-LoadCli @('test-run', 'create', '--test-id', $TestIdToRun, '--test-run-id', $script:RunId, '--no-wait')
+    if (-not $start.Ok) {
+        throw "Could not start the test run.`n$($start.Output)"
+    }
+    Write-Host "  [OK] Run accepted."
+
+    if ($NoWait) {
+        Write-Host ""
+        Write-Host "Not waiting (-NoWait). Check progress with:"
+        Write-Host "  az load test-run show --load-test-resource $($script:LoadTestName) --resource-group $($script:ResourceGroup) --test-run-id $($script:RunId) --query status -o tsv"
+        return [pscustomobject]@{ TestId = $TestIdToRun; RunId = $script:RunId; Status = 'STARTED'; Verdict = 'NOT_WAITED'; Criteria = '-'; Minutes = 0 }
+    }
+
+    Write-Step "Waiting for the run to finish (timeout ${TimeoutMinutes}m)"
+    $outcome = Wait-TestRun -RunIdToWatch $script:RunId -TimeoutMinutes $TimeoutMinutes
+    if ($null -eq $outcome) {
+        Write-Warning "Run '$($script:RunId)' had not reached a terminal state after $TimeoutMinutes minute(s). It is still running in Azure."
+        return [pscustomobject]@{ TestId = $TestIdToRun; RunId = $script:RunId; Status = 'TIMEOUT'; Verdict = 'TIMEOUT'; Criteria = '-'; Minutes = [math]::Round(((Get-Date) - $started).TotalMinutes, 1) }
+    }
+
+    $run = $outcome.Run
+    if ($outcome.SettleSeconds -gt 0) {
+        Write-Host "  verdict settled $($outcome.SettleSeconds)s after the run reached a terminal state." -ForegroundColor DarkGray
+    }
+
+    $verdict = Get-RunVerdict -Run $run -Settled $outcome.Settled
+    Show-RunSummary -Run $run -Verdict $verdict
+
+    if ($DownloadArtefacts) {
+        $target = if ([string]::IsNullOrWhiteSpace($Destination)) {
+            Join-Path $script:RepoRoot ".loadtest-results/$($script:RunId)"
+        }
+        else { $Destination }
+        Save-RunArtefacts -Destination $target
+    }
+
+    return [pscustomobject]@{
+        TestId   = $TestIdToRun
+        RunId    = $script:RunId
+        Status   = [string](Get-ObjectPropertyValue $run 'status')
+        Verdict  = $verdict.Verdict
+        Criteria = "$($verdict.Failed.Count)/$($verdict.CriteriaCount)"
+        Minutes  = [math]::Round(((Get-Date) - $started).TotalMinutes, 1)
+    }
+}
+
+function Get-DeployedTestIds {
+    $remote = Invoke-LoadCli @('test', 'list', '-o', 'json')
+    if (-not $remote.Ok -or [string]::IsNullOrWhiteSpace($remote.Output)) {
+        throw "Could not list the tests deployed in '$($script:LoadTestName)'.`n$($remote.Output)"
+    }
+
+    $tests = @($remote.Output | ConvertFrom-Json)
+    $rows = foreach ($test in $tests) {
+        $id = [string](Get-ObjectPropertyValue $test 'testId')
+        if ([string]::IsNullOrWhiteSpace($id)) { continue }
+        $config = Get-ObjectPropertyValue $test 'loadTestConfiguration'
+        $engines = Get-ObjectPropertyValue $config 'engineInstances'
+        if ($null -eq $engines) { $engines = 1 }
+        [pscustomobject]@{ TestId = $id; Engines = [int]$engines }
+    }
+
+    # Cheapest first: a typo or a broken target should surface on a 1-engine test
+    # before it has cost you a 4-engine, 15-minute run.
+    return @($rows | Sort-Object Engines, TestId)
+}
+
+function Invoke-AllTestRuns {
+    param([int]$TimeoutMinutes, [switch]$DownloadArtefacts, [string]$Destination)
+
+    $tests = Get-DeployedTestIds
+    if ($tests.Count -eq 0) {
+        throw "No tests are deployed in '$($script:LoadTestName)'. Run 'pwsh -File tools/provision_loadtests.ps1' first."
+    }
+
+    Write-Step "Running all $($tests.Count) deployed test definition(s), cheapest first"
+    $tests | Format-Table -AutoSize | Out-String | Write-Host
+    Write-Warning "This runs every test sequentially and spends real virtual user hours. Estimate with 'python tools/vuh_calculator.py --preset all'."
+
+    $results = [System.Collections.Generic.List[object]]::new()
+    foreach ($test in $tests) {
+        try {
+            $results.Add((Invoke-TestRun -TestIdToRun $test.TestId -TimeoutMinutes $TimeoutMinutes -DownloadArtefacts:$DownloadArtefacts -Destination $Destination))
+        }
+        catch {
+            # One broken definition must not abandon the rest of the batch.
+            Write-Host ""
+            Write-Host "  $($test.TestId) could not be run: $($_.Exception.Message)" -ForegroundColor Red
+            $results.Add([pscustomobject]@{ TestId = $test.TestId; RunId = '-'; Status = 'ERROR'; Verdict = 'ERROR'; Criteria = '-'; Minutes = 0 })
+        }
+    }
+
+    Write-Step "All runs complete"
+    $results | Format-Table -AutoSize | Out-String | Write-Host
+
+    $bad = @($results | Where-Object { $_.Verdict -in @('FAILED', 'UNSETTLED', 'NO_VERDICT', 'TIMEOUT', 'ERROR') })
+    if ($bad.Count -gt 0) {
+        Write-Host "$($bad.Count) of $($results.Count) run(s) did not pass: $(($bad | ForEach-Object { $_.TestId }) -join ', ')" -ForegroundColor Red
+        return 1
+    }
+
+    Write-Host "All $($results.Count) run(s) passed or were informational." -ForegroundColor Green
+    return 0
+}
+
 try {
     Ensure-Prerequisites
 
@@ -523,76 +672,41 @@ try {
         $script:LoadTestResourceId = "/subscriptions/$($script:SubscriptionId)/resourceGroups/$($script:ResourceGroup)/providers/Microsoft.LoadTestService/loadTests/$($script:LoadTestName)"
     }
 
-    if ($List -or [string]::IsNullOrWhiteSpace($TestId)) {
+    if ($All -and -not [string]::IsNullOrWhiteSpace($TestId)) {
+        throw "-All runs every deployed test, so it cannot be combined with -TestId."
+    }
+    if ($All -and -not [string]::IsNullOrWhiteSpace($RunId)) {
+        throw "-All generates a run id per test, so it cannot be combined with -RunId."
+    }
+
+    if ($List -or (-not $All -and [string]::IsNullOrWhiteSpace($TestId))) {
         Show-TestCatalog
         if (-not $List) {
             Write-Host ""
-            Write-Warning "No -TestId supplied, so nothing was run and no virtual user hours were spent."
+            Write-Warning "No -TestId supplied, so nothing was run and no virtual user hours were spent. Use -All to run every deployed test."
         }
         exit 0
-    }
-
-    $script:TestId = $TestId
-
-    $exists = Invoke-LoadCli @('test', 'show', '--test-id', $script:TestId, '-o', 'none')
-    if (-not $exists.Ok) {
-        throw "Test '$($script:TestId)' does not exist in '$($script:LoadTestName)'. Run 'pwsh -File tools/provision_loadtests.ps1' first, or use -List to see what is deployed.`n$($exists.Output)"
     }
 
     if ($Preset) { Set-AppPreset -PresetName $Preset }
 
-    $script:RunId = if ([string]::IsNullOrWhiteSpace($RunId)) { New-DefaultRunId -TestId $script:TestId } else { $RunId }
-
-    # The service rejects anything longer than 50 characters with a generic
-    # InvalidRequest, after the run has already been accepted as a command.
-    # Fail here instead, where the message can say what to do about it.
-    if ($script:RunId.Length -gt $script:MaxRunIdLength -or $script:RunId.Length -lt 2) {
-        throw "Run id '$($script:RunId)' is $($script:RunId.Length) characters. Azure Load Testing requires 2-$($script:MaxRunIdLength). Pass a shorter -RunId."
+    if ($All) {
+        exit (Invoke-AllTestRuns -TimeoutMinutes $TimeoutMinutes -DownloadArtefacts:$DownloadResults -Destination $OutputDirectory)
     }
 
-    Write-Step "Starting run '$($script:RunId)' for test '$($script:TestId)'"
-    Write-Host "  This spends virtual user hours. Estimate the cost with 'python tools/vuh_calculator.py' if you need to."
-
-    $start = Invoke-LoadCli @('test-run', 'create', '--test-id', $script:TestId, '--test-run-id', $script:RunId, '--no-wait')
-    if (-not $start.Ok) {
-        throw "Could not start the test run.`n$($start.Output)"
-    }
-    Write-Host "  [OK] Run accepted."
-
-    if ($NoWait) {
-        Write-Host ""
-        Write-Host "Not waiting (-NoWait). Check progress with:"
-        Write-Host "  az load test-run show --load-test-resource $($script:LoadTestName) --resource-group $($script:ResourceGroup) --test-run-id $($script:RunId) --query status -o tsv"
-        exit 0
+    $exists = Invoke-LoadCli @('test', 'show', '--test-id', $TestId, '-o', 'none')
+    if (-not $exists.Ok) {
+        throw "Test '$TestId' does not exist in '$($script:LoadTestName)'. Run 'pwsh -File tools/provision_loadtests.ps1' first, or use -List to see what is deployed.`n$($exists.Output)"
     }
 
-    Write-Step "Waiting for the run to finish (timeout ${TimeoutMinutes}m)"
-    $outcome = Wait-TestRun -RunIdToWatch $script:RunId -TimeoutMinutes $TimeoutMinutes
-    if ($null -eq $outcome) {
-        Write-Warning "Run '$($script:RunId)' had not reached a terminal state after $TimeoutMinutes minute(s). It is still running in Azure."
-        exit 2
-    }
+    $summary = Invoke-TestRun -TestIdToRun $TestId -ExplicitRunId $RunId -TimeoutMinutes $TimeoutMinutes -DownloadArtefacts:$DownloadResults -Destination $OutputDirectory
 
-    $run = $outcome.Run
-    if ($outcome.SettleSeconds -gt 0) {
-        Write-Host "  verdict settled $($outcome.SettleSeconds)s after the run reached a terminal state." -ForegroundColor DarkGray
-    }
-
-    $verdict = Get-RunVerdict -Run $run -Settled $outcome.Settled
-    Show-RunSummary -Run $run -Verdict $verdict
-
-    if ($DownloadResults) {
-        $destination = if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {
-            Join-Path $script:RepoRoot ".loadtest-results/$($script:RunId)"
-        }
-        else { $OutputDirectory }
-        Save-RunArtefacts -Destination $destination
-    }
+    if ($summary.Verdict -eq 'NOT_WAITED') { exit 0 }
+    if ($summary.Verdict -eq 'TIMEOUT') { exit 2 }
 
     # Anything that is not an unambiguous pass exits non-zero. A gate that cannot
     # prove the run passed must not report success.
-    $status = [string](Get-ObjectPropertyValue $run 'status')
-    if ($status -ne 'DONE' -or $verdict.Verdict -in @('FAILED', 'UNSETTLED', 'NO_VERDICT')) { exit 1 }
+    if ($summary.Status -ne 'DONE' -or $summary.Verdict -in @('FAILED', 'UNSETTLED', 'NO_VERDICT')) { exit 1 }
     exit 0
 }
 catch {

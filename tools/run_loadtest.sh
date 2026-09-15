@@ -30,6 +30,7 @@ TEST_ID=""
 RUN_ID=""
 PRESET=""
 LIST_ONLY=0
+RUN_ALL=0
 NO_WAIT=0
 DOWNLOAD=0
 OUTPUT_DIR=""
@@ -56,6 +57,7 @@ Usage: tools/run_loadtest.sh [--test-id <id>] [options]
 
 Options:
   -t, --test-id <id>     Test definition to run, e.g. contoso-bank-peak-load
+  -a, --all              Run every deployed test definition, cheapest first
   -r, --run-id <id>      Test run id (default "<testId>-YYYYmmdd-HHMMSS")
   -l, --list             List the available test definitions and exit
   -p, --preset <name>    POST 'bottlenecked' or 'optimized' to the demo app first
@@ -72,6 +74,11 @@ Examples:
   tools/run_loadtest.sh --list
   tools/run_loadtest.sh --test-id contoso-bank-url-basic
   tools/run_loadtest.sh -t contoso-bank-pr-gate -p bottlenecked -r demo-run-before --download
+  tools/run_loadtest.sh --all --timeout 45
+
+Exit codes: 0 = passed (or --list / --no-wait), 1 = failed/unjudgeable/error,
+            2 = did not finish within --timeout. With --all, 1 means at least one
+            run in the batch did not pass.
 EOF
 }
 
@@ -199,6 +206,7 @@ while [ $# -gt 0 ]; do
         -r|--run-id) RUN_ID=${2:?missing value for --run-id}; shift 2 ;;
         -p|--preset) PRESET=${2:?missing value for --preset}; shift 2 ;;
         -l|--list) LIST_ONLY=1; shift ;;
+        -a|--all) RUN_ALL=1; shift ;;
         --no-wait) NO_WAIT=1; shift ;;
         --timeout) TIMEOUT_MINUTES=${2:?missing value for --timeout}; shift 2 ;;
         --download) DOWNLOAD=1; shift ;;
@@ -226,198 +234,254 @@ if [ -z "$LOAD_TEST_RESOURCE_ID" ] && [ -n "$SUBSCRIPTION_ID" ]; then
     LOAD_TEST_RESOURCE_ID="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.LoadTestService/loadTests/$LOAD_TEST_NAME"
 fi
 
-if [ "$LIST_ONLY" -eq 1 ] || [ -z "$TEST_ID" ]; then
+run_one_test() {
+    TEST_ID=$1
+    RUN_ID=${2:-}
+
+    load_cli test show --test-id "$TEST_ID" -o none >/dev/null 2>&1 \
+        || fail "Test '$TEST_ID' does not exist in '$LOAD_TEST_NAME'. Run 'tools/provision_loadtests.sh' first, or use --list to see what is deployed."
+
+    [ -n "$RUN_ID" ] || RUN_ID=$(default_run_id "$TEST_ID")
+
+    # The service rejects anything outside 2-50 characters with a generic
+    # InvalidRequest. Fail here instead, where the message can say what to do.
+    if [ ${#RUN_ID} -gt "$MAX_RUN_ID_LENGTH" ] || [ ${#RUN_ID} -lt 2 ]; then
+        fail "Run id '$RUN_ID' is ${#RUN_ID} characters. Azure Load Testing requires 2-$MAX_RUN_ID_LENGTH. Pass a shorter --run-id."
+    fi
+
+    say_step "Starting run '$RUN_ID' for test '$TEST_ID'"
+    printf "  This spends virtual user hours. Estimate the cost with 'python tools/vuh_calculator.py' if you need to.\n"
+    load_cli test-run create --test-id "$TEST_ID" --test-run-id "$RUN_ID" --no-wait >/dev/null \
+        || fail "Could not start the test run."
+    printf '  [OK] Run accepted.\n'
+
+    if [ "$NO_WAIT" -eq 1 ]; then
+        printf '\nNot waiting (--no-wait). Check progress with:\n'
+        printf '  az load test-run show --load-test-resource %s --resource-group %s --test-run-id %s --query status -o tsv\n' \
+            "$LOAD_TEST_NAME" "$RESOURCE_GROUP" "$RUN_ID"
+        exit 0
+    fi
+
+    say_step "Waiting for the run to finish (timeout ${TIMEOUT_MINUTES}m)"
+    deadline=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
+    status=""
+    last_status=""
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        status=$(load_cli test-run show --test-run-id "$RUN_ID" --query status -o tsv 2>/dev/null || true)
+        case "$status" in
+            DONE|FAILED|CANCELLED) break ;;
+        esac
+        if [ -n "$status" ] && [ "$status" != "$last_status" ]; then
+            printf '  %s...\n' "$status"
+            last_status=$status
+        fi
+        status=""
+        sleep 15
+    done
+
+    if [ -z "$status" ]; then
+        printf '\nRun %s had not reached a terminal state after %s minute(s). It is still running in Azure.\n' "$RUN_ID" "$TIMEOUT_MINUTES" >&2
+        return 2
+    fi
+
+    # Wait for the verdict to SETTLE, not just for the run to finish.
+    #
+    # MEASURED, not assumed: at the moment status first flips to DONE this service
+    # reports testResult = NOT_APPLICABLE *and* every passFailMetrics entry still
+    # reads result = "passed". The criteria settle to their real values later. Run
+    # contoso-bank-pr-gate-runall-20260915-102506 read as 0/4 criteria failed at
+    # first DONE and later as 3/4 failed (avg 2725ms against a 500ms criterion).
+    # Reading either signal too early therefore produces a FALSE GREEN, which is the
+    # worst possible outcome for a gate. See docs/07 section 7.2.
+    settle_deadline=$(( $(date +%s) + SETTLE_TIMEOUT_SECONDS ))
+    settled=0
+    settle_start=$(date +%s)
+    announced=0
+
+    criteria_total=$(load_cli test-run show --test-run-id "$RUN_ID" \
+        --query "length(values(passFailCriteria.passFailMetrics))" -o tsv 2>/dev/null || echo 0)
+    [ -n "$criteria_total" ] || criteria_total=0
+
+    if [ "$status" != "DONE" ] || [ "$criteria_total" -eq 0 ]; then
+        # A criteria-less test never resolves past NOT_APPLICABLE, and a run that did
+        # not complete has no verdict to wait for.
+        settled=1
+    fi
+
+    reported_result=$(load_cli test-run show --test-run-id "$RUN_ID" --query testResult -o tsv 2>/dev/null || true)
+
+    while [ "$settled" -eq 0 ] && [ "$(date +%s)" -lt "$settle_deadline" ]; do
+        case "$reported_result" in
+            PASSED|FAILED) settled=1; break ;;
+        esac
+        if [ "$announced" -eq 0 ]; then
+            printf '  DONE - waiting for the pass/fail verdict to settle...\n'
+            announced=1
+        fi
+        sleep 10
+        reported_result=$(load_cli test-run show --test-run-id "$RUN_ID" --query testResult -o tsv 2>/dev/null || true)
+    done
+
+    settle_seconds=$(( $(date +%s) - settle_start ))
+
+    criteria_total=$(load_cli test-run show --test-run-id "$RUN_ID" \
+        --query "length(values(passFailCriteria.passFailMetrics))" -o tsv 2>/dev/null || echo 0)
+    criteria_failed=$(load_cli test-run show --test-run-id "$RUN_ID" \
+        --query "length(values(passFailCriteria.passFailMetrics)[?result=='failed'])" -o tsv 2>/dev/null || echo 0)
+    [ -n "$criteria_total" ] || criteria_total=0
+    [ -n "$criteria_failed" ] || criteria_failed=0
+
+    # Take the pessimistic reading of the two signals: either one reporting failure
+    # is a failure, and anything short of positive proof of a pass is UNSETTLED.
+    if [ "$criteria_total" -eq 0 ]; then
+        verdict="NOT_APPLICABLE"
+    elif [ "$status" != "DONE" ]; then
+        verdict="NO_VERDICT"
+    elif [ "$settled" -eq 0 ]; then
+        verdict="UNSETTLED"
+    elif [ "$criteria_failed" -gt 0 ] || [ "$reported_result" = "FAILED" ]; then
+        verdict="FAILED"
+    elif [ "$reported_result" = "PASSED" ]; then
+        verdict="PASSED"
+    else
+        verdict="UNSETTLED"
+    fi
+
+    say_step "Run summary"
+    printf '  test id       : %s\n' "$TEST_ID"
+    printf '  run id        : %s\n' "$RUN_ID"
+    printf '  status        : %s\n' "$status"
+    printf '  verdict       : %s  (%s/%s criteria failed, testResult=%s)\n' "$verdict" "$criteria_failed" "$criteria_total" "$reported_result"
+    if [ "$settle_seconds" -gt 0 ]; then
+        printf '  settled after : %ss past the terminal state\n' "$settle_seconds"
+    fi
+
+    if [ "$verdict" = "NO_VERDICT" ]; then
+        printf '  warning       : the run did not complete, so there is no performance conclusion.\n'
+        printf '                  status=%s means the test infrastructure, script, secrets or network path\n' "$status"
+        printf '                  failed - your test is broken, not necessarily your app. Engine logs:\n'
+        printf '                  az load test-run download-files --test-run-id %s --path ./logs --log --force\n' "$RUN_ID"
+    elif [ "$verdict" = "UNSETTLED" ]; then
+        printf '  warning       : the verdict had not settled when this script gave up waiting.\n'
+        printf '                  Re-read the run before trusting it - do NOT treat this as a pass.\n'
+    elif [ "$reported_result" = "FAILED" ] && [ "$criteria_failed" -eq 0 ]; then
+        printf "  note          : testResult says FAILED while every criterion still reads 'passed'.\n"
+        printf '                  The per-criterion results lag; the failing verdict is authoritative.\n'
+    fi
+
+    if [ "$criteria_total" -eq 0 ]; then
+        printf '  warning       : this test defines no failure criteria, so it can never fail.\n'
+        printf '                  A green run here proves nothing - see docs/07 section 7.2.\n'
+    fi
+
+    if [ "$criteria_failed" -gt 0 ]; then
+        load_cli test-run show --test-run-id "$RUN_ID" \
+            --query "values(passFailCriteria.passFailMetrics)[?result=='failed'].[aggregate,clientMetric,condition,value,actualValue]" \
+            -o tsv 2>/dev/null | while IFS="$(printf '\t')" read -r aggregate metric condition value actual; do
+                [ -n "$aggregate" ] || continue
+                printf '  breached      : %s(%s) %s %s - actual %s\n' "$aggregate" "$metric" "$condition" "$value" "$actual"
+            done
+    fi
+
+    stats=$(load_cli test-run show --test-run-id "$RUN_ID" \
+        --query "testRunStatistics.Total.[sampleCount,errorCount,errorPct,throughput,meanResTime,pct1ResTime,pct2ResTime,pct3ResTime]" \
+        -o tsv 2>/dev/null || true)
+    if [ -n "$stats" ]; then
+        printf '%s\n' "$stats" | while IFS="$(printf '\t')" read -r samples errors error_pct throughput mean p90 p95 p99; do
+            printf '\n  samples       : %s\n' "$samples"
+            printf '  errors        : %s (%s%%)\n' "$errors" "$error_pct"
+            printf '  throughput    : %s req/s\n' "$throughput"
+            printf '  response ms   : mean %s / p90 %s / p95 %s / p99 %s\n' "$mean" "$p90" "$p95" "$p99"
+        done
+    fi
+
+    if [ -n "$LOAD_TEST_RESOURCE_ID" ]; then
+        printf '\n  portal        : https://portal.azure.com/#resource%s/tests\n' "$LOAD_TEST_RESOURCE_ID"
+    fi
+    printf '  cli           : az load test-run show --load-test-resource %s --resource-group %s --test-run-id %s\n' \
+        "$LOAD_TEST_NAME" "$RESOURCE_GROUP" "$RUN_ID"
+
+    if [ "$DOWNLOAD" -eq 1 ]; then
+        [ -n "$OUTPUT_DIR" ] || OUTPUT_DIR="$REPO_ROOT/.loadtest-results/$RUN_ID"
+        say_step "Downloading results and report"
+        mkdir -p "$OUTPUT_DIR"
+        if load_cli test-run download-files --test-run-id "$RUN_ID" --path "$OUTPUT_DIR" --result --report --force >/dev/null 2>&1; then
+            printf '  [OK] artefacts written to %s\n' "$OUTPUT_DIR"
+        else
+            printf '  Could not download the run artefacts.\n' >&2
+        fi
+    fi
+
+    # Anything that is not an unambiguous pass exits non-zero. A gate that cannot
+    # prove the run passed must not report success.
+    case "$verdict" in
+        FAILED|UNSETTLED|NO_VERDICT) return 1 ;;
+    esac
+    if [ "$status" != "DONE" ]; then
+        return 1
+    fi
+        return 0
+}
+
+# Every deployed test, cheapest first: a typo or a broken target should surface on
+# a 1-engine test before it has cost you a 4-engine, 15-minute run.
+run_all_tests() {
+    listing=$(load_cli test list --query "[].[loadTestConfiguration.engineInstances,testId]" -o tsv 2>/dev/null || true)
+    [ -n "$listing" ] || fail "Could not list the tests deployed in '$LOAD_TEST_NAME'. Run 'tools/provision_loadtests.sh' first."
+
+    ids=$(printf '%s\n' "$listing" | sort -n -k1,1 -k2,2 | awk '{print $2}')
+    total=$(printf '%s\n' "$ids" | grep -c .)
+
+    say_step "Running all $total deployed test definition(s), cheapest first"
+    printf '%s\n' "$ids" | sed 's/^/  /'
+    printf '\n  This runs every test sequentially and spends real virtual user hours.\n'
+
+    summary=""
+    failures=0
+    for id in $ids; do
+        if run_one_test "$id" ""; then
+            summary="$summary\n  $id  ->  $verdict"
+        else
+            summary="$summary\n  $id  ->  $verdict"
+            failures=$((failures + 1))
+        fi
+    done
+
+    say_step "All runs complete"
+    printf '%b\n' "$summary"
+
+    if [ "$failures" -gt 0 ]; then
+        printf '\n%s of %s run(s) did not pass.\n' "$failures" "$total" >&2
+        return 1
+    fi
+    printf '\nAll %s run(s) passed or were informational.\n' "$total"
+    return 0
+}
+
+if [ "$RUN_ALL" -eq 1 ] && [ -n "$TEST_ID" ]; then
+    fail "--all runs every deployed test, so it cannot be combined with --test-id."
+fi
+if [ "$RUN_ALL" -eq 1 ] && [ -n "$RUN_ID" ]; then
+    fail "--all generates a run id per test, so it cannot be combined with --run-id."
+fi
+
+if [ "$LIST_ONLY" -eq 1 ] || { [ "$RUN_ALL" -eq 0 ] && [ -z "$TEST_ID" ]; }; then
     show_catalog
     if [ "$LIST_ONLY" -eq 0 ]; then
         printf '\nNo --test-id supplied, so nothing was run and no virtual user hours were spent.\n'
+        printf 'Use --all to run every deployed test.\n'
     fi
     exit 0
 fi
-
-load_cli test show --test-id "$TEST_ID" -o none >/dev/null 2>&1 \
-    || fail "Test '$TEST_ID' does not exist in '$LOAD_TEST_NAME'. Run 'tools/provision_loadtests.sh' first, or use --list to see what is deployed."
 
 if [ -n "$PRESET" ]; then
     set_app_preset "$PRESET"
 fi
 
-[ -n "$RUN_ID" ] || RUN_ID=$(default_run_id "$TEST_ID")
-
-# The service rejects anything longer than 50 characters with a generic
-# InvalidRequest. Fail here instead, where the message can say what to do.
-if [ ${#RUN_ID} -gt "$MAX_RUN_ID_LENGTH" ] || [ ${#RUN_ID} -lt 2 ]; then
-    fail "Run id '$RUN_ID' is ${#RUN_ID} characters. Azure Load Testing requires 2-$MAX_RUN_ID_LENGTH. Pass a shorter --run-id."
+if [ "$RUN_ALL" -eq 1 ]; then
+    run_all_tests
+    exit $?
 fi
 
-say_step "Starting run '$RUN_ID' for test '$TEST_ID'"
-printf "  This spends virtual user hours. Estimate the cost with 'python tools/vuh_calculator.py' if you need to.\n"
-load_cli test-run create --test-id "$TEST_ID" --test-run-id "$RUN_ID" --no-wait >/dev/null \
-    || fail "Could not start the test run."
-printf '  [OK] Run accepted.\n'
-
-if [ "$NO_WAIT" -eq 1 ]; then
-    printf '\nNot waiting (--no-wait). Check progress with:\n'
-    printf '  az load test-run show --load-test-resource %s --resource-group %s --test-run-id %s --query status -o tsv\n' \
-        "$LOAD_TEST_NAME" "$RESOURCE_GROUP" "$RUN_ID"
-    exit 0
-fi
-
-say_step "Waiting for the run to finish (timeout ${TIMEOUT_MINUTES}m)"
-deadline=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
-status=""
-last_status=""
-while [ "$(date +%s)" -lt "$deadline" ]; do
-    status=$(load_cli test-run show --test-run-id "$RUN_ID" --query status -o tsv 2>/dev/null || true)
-    case "$status" in
-        DONE|FAILED|CANCELLED) break ;;
-    esac
-    if [ -n "$status" ] && [ "$status" != "$last_status" ]; then
-        printf '  %s...\n' "$status"
-        last_status=$status
-    fi
-    status=""
-    sleep 15
-done
-
-if [ -z "$status" ]; then
-    printf '\nRun %s had not reached a terminal state after %s minute(s). It is still running in Azure.\n' "$RUN_ID" "$TIMEOUT_MINUTES" >&2
-    exit 2
-fi
-
-# Wait for the verdict to SETTLE, not just for the run to finish.
-#
-# MEASURED, not assumed: at the moment status first flips to DONE this service
-# reports testResult = NOT_APPLICABLE *and* every passFailMetrics entry still
-# reads result = "passed". The criteria settle to their real values later. Run
-# contoso-bank-pr-gate-runall-20260915-102506 read as 0/4 criteria failed at
-# first DONE and later as 3/4 failed (avg 2725ms against a 500ms criterion).
-# Reading either signal too early therefore produces a FALSE GREEN, which is the
-# worst possible outcome for a gate. See docs/07 section 7.2.
-settle_deadline=$(( $(date +%s) + SETTLE_TIMEOUT_SECONDS ))
-settled=0
-settle_start=$(date +%s)
-announced=0
-
-criteria_total=$(load_cli test-run show --test-run-id "$RUN_ID" \
-    --query "length(values(passFailCriteria.passFailMetrics))" -o tsv 2>/dev/null || echo 0)
-[ -n "$criteria_total" ] || criteria_total=0
-
-if [ "$status" != "DONE" ] || [ "$criteria_total" -eq 0 ]; then
-    # A criteria-less test never resolves past NOT_APPLICABLE, and a run that did
-    # not complete has no verdict to wait for.
-    settled=1
-fi
-
-reported_result=$(load_cli test-run show --test-run-id "$RUN_ID" --query testResult -o tsv 2>/dev/null || true)
-
-while [ "$settled" -eq 0 ] && [ "$(date +%s)" -lt "$settle_deadline" ]; do
-    case "$reported_result" in
-        PASSED|FAILED) settled=1; break ;;
-    esac
-    if [ "$announced" -eq 0 ]; then
-        printf '  DONE - waiting for the pass/fail verdict to settle...\n'
-        announced=1
-    fi
-    sleep 10
-    reported_result=$(load_cli test-run show --test-run-id "$RUN_ID" --query testResult -o tsv 2>/dev/null || true)
-done
-
-settle_seconds=$(( $(date +%s) - settle_start ))
-
-criteria_total=$(load_cli test-run show --test-run-id "$RUN_ID" \
-    --query "length(values(passFailCriteria.passFailMetrics))" -o tsv 2>/dev/null || echo 0)
-criteria_failed=$(load_cli test-run show --test-run-id "$RUN_ID" \
-    --query "length(values(passFailCriteria.passFailMetrics)[?result=='failed'])" -o tsv 2>/dev/null || echo 0)
-[ -n "$criteria_total" ] || criteria_total=0
-[ -n "$criteria_failed" ] || criteria_failed=0
-
-# Take the pessimistic reading of the two signals: either one reporting failure
-# is a failure, and anything short of positive proof of a pass is UNSETTLED.
-if [ "$criteria_total" -eq 0 ]; then
-    verdict="NOT_APPLICABLE"
-elif [ "$status" != "DONE" ]; then
-    verdict="NO_VERDICT"
-elif [ "$settled" -eq 0 ]; then
-    verdict="UNSETTLED"
-elif [ "$criteria_failed" -gt 0 ] || [ "$reported_result" = "FAILED" ]; then
-    verdict="FAILED"
-elif [ "$reported_result" = "PASSED" ]; then
-    verdict="PASSED"
-else
-    verdict="UNSETTLED"
-fi
-
-say_step "Run summary"
-printf '  test id       : %s\n' "$TEST_ID"
-printf '  run id        : %s\n' "$RUN_ID"
-printf '  status        : %s\n' "$status"
-printf '  verdict       : %s  (%s/%s criteria failed, testResult=%s)\n' "$verdict" "$criteria_failed" "$criteria_total" "$reported_result"
-if [ "$settle_seconds" -gt 0 ]; then
-    printf '  settled after : %ss past the terminal state\n' "$settle_seconds"
-fi
-
-if [ "$verdict" = "NO_VERDICT" ]; then
-    printf '  warning       : the run did not complete, so there is no performance conclusion.\n'
-    printf '                  status=%s means the test infrastructure, script, secrets or network path\n' "$status"
-    printf '                  failed - your test is broken, not necessarily your app. Engine logs:\n'
-    printf '                  az load test-run download-files --test-run-id %s --path ./logs --log --force\n' "$RUN_ID"
-elif [ "$verdict" = "UNSETTLED" ]; then
-    printf '  warning       : the verdict had not settled when this script gave up waiting.\n'
-    printf '                  Re-read the run before trusting it - do NOT treat this as a pass.\n'
-elif [ "$reported_result" = "FAILED" ] && [ "$criteria_failed" -eq 0 ]; then
-    printf "  note          : testResult says FAILED while every criterion still reads 'passed'.\n"
-    printf '                  The per-criterion results lag; the failing verdict is authoritative.\n'
-fi
-
-if [ "$criteria_total" -eq 0 ]; then
-    printf '  warning       : this test defines no failure criteria, so it can never fail.\n'
-    printf '                  A green run here proves nothing - see docs/07 section 7.2.\n'
-fi
-
-if [ "$criteria_failed" -gt 0 ]; then
-    load_cli test-run show --test-run-id "$RUN_ID" \
-        --query "values(passFailCriteria.passFailMetrics)[?result=='failed'].[aggregate,clientMetric,condition,value,actualValue]" \
-        -o tsv 2>/dev/null | while IFS="$(printf '\t')" read -r aggregate metric condition value actual; do
-            [ -n "$aggregate" ] || continue
-            printf '  breached      : %s(%s) %s %s - actual %s\n' "$aggregate" "$metric" "$condition" "$value" "$actual"
-        done
-fi
-
-stats=$(load_cli test-run show --test-run-id "$RUN_ID" \
-    --query "testRunStatistics.Total.[sampleCount,errorCount,errorPct,throughput,meanResTime,pct1ResTime,pct2ResTime,pct3ResTime]" \
-    -o tsv 2>/dev/null || true)
-if [ -n "$stats" ]; then
-    printf '%s\n' "$stats" | while IFS="$(printf '\t')" read -r samples errors error_pct throughput mean p90 p95 p99; do
-        printf '\n  samples       : %s\n' "$samples"
-        printf '  errors        : %s (%s%%)\n' "$errors" "$error_pct"
-        printf '  throughput    : %s req/s\n' "$throughput"
-        printf '  response ms   : mean %s / p90 %s / p95 %s / p99 %s\n' "$mean" "$p90" "$p95" "$p99"
-    done
-fi
-
-if [ -n "$LOAD_TEST_RESOURCE_ID" ]; then
-    printf '\n  portal        : https://portal.azure.com/#resource%s/tests\n' "$LOAD_TEST_RESOURCE_ID"
-fi
-printf '  cli           : az load test-run show --load-test-resource %s --resource-group %s --test-run-id %s\n' \
-    "$LOAD_TEST_NAME" "$RESOURCE_GROUP" "$RUN_ID"
-
-if [ "$DOWNLOAD" -eq 1 ]; then
-    [ -n "$OUTPUT_DIR" ] || OUTPUT_DIR="$REPO_ROOT/.loadtest-results/$RUN_ID"
-    say_step "Downloading results and report"
-    mkdir -p "$OUTPUT_DIR"
-    if load_cli test-run download-files --test-run-id "$RUN_ID" --path "$OUTPUT_DIR" --result --report --force >/dev/null 2>&1; then
-        printf '  [OK] artefacts written to %s\n' "$OUTPUT_DIR"
-    else
-        printf '  Could not download the run artefacts.\n' >&2
-    fi
-fi
-
-# Anything that is not an unambiguous pass exits non-zero. A gate that cannot
-# prove the run passed must not report success.
-case "$verdict" in
-    FAILED|UNSETTLED|NO_VERDICT) exit 1 ;;
-esac
-if [ "$status" != "DONE" ]; then
-    exit 1
-fi
-exit 0
+run_one_test "$TEST_ID" "$RUN_ID"
+exit $?
