@@ -73,7 +73,7 @@ graph LR
 
 - **Secrets** are stored in **Key Vault** and referenced from the test config by **secret identifier URI** (with or without version). Only the URI is in Git.
 - Access is granted to the load testing resource's **managed identity** (system-assigned or user-assigned) with `Get` on secrets. Multiple user-assigned identities are supported for accessing different resources.
-- In **JMeter**, retrieve with the `GetSecret` function; in **Locust**, secrets arrive as environment variables.
+- In **JMeter**, retrieve with the `GetSecret` function **from a User Defined Variables element**, then reference the resulting variable in headers and requests; the service rejects `__GetSecret` when it is evaluated in sampler or listener context. In **Locust**, secrets arrive as environment variables.
 - **Client certificates** for **mTLS** are also supported via Key Vault — important, because mutual TLS is extremely common on banking and open-banking APIs.
 - `referenceIdentities` in the YAML lets you use *different* identities for different purposes (`KeyVault`, `Metrics`, `Engine`) — good least-privilege hygiene.
 

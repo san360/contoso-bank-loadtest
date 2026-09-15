@@ -345,6 +345,7 @@ See §7.2 for the full status taxonomy and §7.9 for why `autoStop` had to be di
 | Test stopped early | AutoStop triggered by high error rate | Expected behaviour — investigate the errors, or adjust AutoStop |
 | Results download unavailable | >45 engines or >3 hours duration | Use Backend Listener / storage account export |
 | `GetSecret` returns nothing locally | It only resolves inside Azure Load Testing | Use a local fallback property when running in the JMeter GUI |
+| `__GetSecret function is not allowed in a sampler or a listener` in the engine log, while the run still shows 0% errors | The function is being evaluated per request, e.g. directly inside an HTTP Header Manager value. No Key Vault call is made, so this is not an RBAC or network problem | Resolve it once in a User Defined Variables element and reference that variable in the header. See [24 — Secrets from Key Vault](24-secrets-from-key-vault.md) §24.3.1 |
 | Quota error on run start | Engine/concurrency quota | Check quota blade; raise a free support request ahead of time |
 
 ---

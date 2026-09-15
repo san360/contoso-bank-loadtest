@@ -16,20 +16,24 @@ Yes, the repo ships a test case for this:
 | Script | [`loadtests/jmeter/contoso-bank-secrets.jmx`](../loadtests/jmeter/contoso-bank-secrets.jmx) |
 | Secret name exposed to the test | `API_KEY` |
 | Secret source | Key Vault secret URI `https://kv-loadtest-27d2e5.vault.azure.net/secrets/demo-api-key` |
-| Wire location | HTTP `Authorization` header, as `Bearer ${__GetSecret(API_KEY)}` |
+| Where the secret is resolved | The `Secret Variables` User Defined Variables element, into `udv_apiKey` |
+| Wire location | HTTP `Authorization` header, as `Bearer ${udv_apiKey}` |
 | App endpoint hit by the secured sampler | `GET /api/accounts/${accountId}/balance` |
-| Current verdict | **Not airtight.** It does not prove application-side authentication. |
+| Resolution gate | The `SecretResolutionCheck` sampler plus its own `percentage(error) > 0` fail criterion |
+| Current verdict | **Client side is now provable; the application side is still not.** A run proves the secret was fetched, not that the app enforces it. |
 
 What it proves today:
 
-- The test definition can carry a **Key Vault secret URI** instead of a secret value (`loadtests/config/secrets-demo.yaml`, lines 61-63).
+- The test definition can carry a **Key Vault secret URI** instead of a secret value (`loadtests/config/secrets-demo.yaml`, lines 70-72).
 - Azure Load Testing can store that secret parameter on the test definition (`az load test show` reports `API_KEY` as an `AKV_SECRET_URI`).
-- The JMeter plan is wired to send the resolved value as an HTTP header (`loadtests/jmeter/contoso-bank-secrets.jmx`, lines 45-46).
+- The JMeter plan resolves the value into a variable and sends it as an HTTP header (`loadtests/jmeter/contoso-bank-secrets.jmx`, lines 35-44 and 65-66).
+- The run now fails loudly when the value never arrives, because `SecretResolutionCheck` (`loadtests/jmeter/contoso-bank-secrets.jmx`, lines 92-127) inspects the resolved variable and is gated by a request-scoped fail criterion. See §24.3.1.
 
 What it does **not** prove today:
 
 - It does **not** prove the application rejects requests without the token. `src/main.py` has no `Authorization`, API-key, `Header`, `Depends`, `Security`, or `HTTPBearer` validation path. The only `request.headers` reads found are for `X-Correlation-Id` (`src/main.py`, lines 452 and 919), and the balance endpoint itself is declared without any dependency (`src/main.py`, line 731).
-- It does **not** prove the secret resolved to a non-empty or correct value. The live run `contoso-bank-secrets-kv-runall-20260915-102506` executed `14,644` total samples with `0.0%` errors, but the application also returns `200` with no `Authorization` header and with a deliberately wrong bearer token.
+- It does **not** prove the secret is the **correct** value, only that a non-empty value was resolved and fingerprinted. Proving correctness still needs an endpoint that rejects a wrong token (§24.6).
+- The live run `contoso-bank-secrets-kv-runall-20260915-102506` executed `14,644` total samples with `0.0%` errors while the engine log was filled with `__GetSecret function is not allowed in a sampler or a listener`. That run is the worked example of a false green: the application also returns `200` with no `Authorization` header and with a deliberately wrong bearer token. See §24.3.1.
 - It does **not** support the repo's older absolute claim that this subscription's Key Vault policy necessarily makes `contoso-bank-secrets-kv` fail at run time. The vault does report `publicNetworkAccess: "Disabled"` and this CLI caller is blocked from data-plane secret reads, but the named run still reached engine execution. Treat the policy trap as **"can fail unless the Azure Load Testing-to-Key Vault path is admitted"**, not **"public access disabled guarantees run-time failure"**.
 - It does **not** prove the secret value is the right value. Because the app ignores the header, any value, an empty value, or no header still results in successful application responses today.
 
@@ -43,14 +47,17 @@ Blunt demo line:
 
 | File | Line-level fact | Meaning |
 |---|---|---|
-| `loadtests/config/secrets-demo.yaml` | Lines 36-41 define `testId: contoso-bank-secrets-kv`, display name `Contoso Bank - Key Vault Secrets`, and `testPlan: ../jmeter/contoso-bank-secrets.jmx`. | The Key Vault test exists as a first-class Azure Load Testing YAML definition. |
-| `loadtests/config/secrets-demo.yaml` | Lines 49-58 set non-secret `env` values such as `BASE_URL`, `threads`, `rampup`, `duration`, and `accountId`. | The host and load shape are not secret and are stored plainly. |
-| `loadtests/config/secrets-demo.yaml` | Lines 61-63 define `API_KEY` as a Key Vault secret URI. | The YAML stores a URI, not the secret value. |
-| `loadtests/config/secrets-demo.yaml` | Lines 23-25 explicitly state that the Contoso Bank API does not currently validate the `Authorization` header. | The current repo already documents the core limitation. |
+| `loadtests/config/secrets-demo.yaml` | Lines 45-50 define `testId: contoso-bank-secrets-kv`, display name `Contoso Bank - Key Vault Secrets`, and `testPlan: ../jmeter/contoso-bank-secrets.jmx`. | The Key Vault test exists as a first-class Azure Load Testing YAML definition. |
+| `loadtests/config/secrets-demo.yaml` | Lines 58-68 set non-secret `env` values such as `BASE_URL`, `threads`, `rampup`, `duration`, and `accountId`. | The host and load shape are not secret and are stored plainly. |
+| `loadtests/config/secrets-demo.yaml` | Lines 70-72 define `API_KEY` as a Key Vault secret URI. | The YAML stores a URI, not the secret value. |
+| `loadtests/config/secrets-demo.yaml` | Line 83 adds `SecretResolutionCheck: percentage(error) > 0`. | A secret that never resolves fails the run instead of being averaged away. |
+| `loadtests/config/secrets-demo.yaml` | Line 32 explicitly states that the Contoso Bank API does not currently validate the `Authorization` header. | The current repo already documents the core limitation. |
 | `loadtests/jmeter/contoso-bank-secrets.jmx` | Line 13 reads `BASE_URL` from `System.getenv("BASE_URL")`. | Non-secret environment variables are read by JMeter from the load-test engine environment. |
-| `loadtests/jmeter/contoso-bank-secrets.jmx` | Lines 45-46 set the `Authorization` header to `Bearer ${__GetSecret(API_KEY)}`. | The secret is placed in a header, not in a query string or body. |
-| `loadtests/jmeter/contoso-bank-secrets.jmx` | Lines 66-81 call `/api/accounts/${accountId}/balance` and assert HTTP `200`. | The main sampler expects success when the header is present. |
-| `loadtests/jmeter/contoso-bank-secrets.jmx` | Lines 88-103 call `/health` and assert HTTP `200`. | The script also sends the same header to a health endpoint that should not require authentication. |
+| `loadtests/jmeter/contoso-bank-secrets.jmx` | Lines 35-44 resolve `${__GetSecret(API_KEY)}` into `udv_apiKey` inside a User Defined Variables element. | This is the only placement Azure Load Testing accepts; see §24.3.1. |
+| `loadtests/jmeter/contoso-bank-secrets.jmx` | Lines 65-66 set the `Authorization` header to `Bearer ${udv_apiKey}`. | The secret is placed in a header, not in a query string or body, and the header reads a variable rather than calling the function per request. |
+| `loadtests/jmeter/contoso-bank-secrets.jmx` | Lines 92-127 run `SecretResolutionCheck` once per thread and fail it when `udv_apiKey` is empty or still a placeholder. | The run carries its own evidence that the secret was fetched. |
+| `loadtests/jmeter/contoso-bank-secrets.jmx` | Lines 130-150 call `/api/accounts/${accountId}/balance` and assert HTTP `200`. | The main sampler expects success when the header is present. |
+| `loadtests/jmeter/contoso-bank-secrets.jmx` | Lines 152-172 call `/health` and assert HTTP `200`. | The script also sends the same header to a health endpoint that should not require authentication. |
 | `src/main.py` | Lines 549, 560, 645, 676, 720, 731, 772, 802, 862, and 870 declare endpoints with no authentication dependency. | No route is protected by an API key today. |
 | `src/main.py` | Lines 731-769 implement `GET /api/accounts/{account_id}/balance`; the first branch is a `404` check, not an auth check. | Missing or wrong `Authorization` cannot change the result today. |
 | `infra/main.tf` | Lines 253-263 create the Azure Load Testing resource with a system-assigned identity. | The default Key Vault resolution identity is the load test resource identity. |
@@ -96,9 +103,80 @@ Detailed flow for `contoso-bank-secrets-kv`:
 2. **Terraform grants the load-test identity access.** The Azure Load Testing resource has a system-assigned identity, and `azurerm_role_assignment.key_vault_secrets_user` grants it `Key Vault Secrets User` on the vault.
 3. **The test definition stores the URI.** `loadtests/config/secrets-demo.yaml` stores `API_KEY` with a Key Vault URI under `secrets:`. Microsoft Learn confirms that secret parameters use the secret name expected by the script and a Key Vault secret identifier as the value.
 4. **Azure Load Testing resolves at run time.** The load-test service uses the configured Key Vault reference identity. If no explicit `keyVaultReferenceIdentity` or `referenceIdentities` entry is supplied, this demo uses the load-test resource's system-assigned identity.
-5. **JMeter reads the secret.** The JMX uses Azure Load Testing's custom `GetSecret` function: `${__GetSecret(API_KEY)}`. Microsoft Learn states this function works only when the JMeter script runs in Azure Load Testing, not when run locally.
-6. **JMeter sends the secret to the app.** The script sends `Authorization: Bearer ${__GetSecret(API_KEY)}` on the `/api/accounts/${accountId}/balance` and `/health` samplers. It is not in the URL, not in query parameters, and not in the request body.
-7. **The application ignores it today.** `GET /api/accounts/{account_id}/balance` returns data without requiring a key. Live read-only checks returned `200` for both no `Authorization` header and a deliberately wrong `Authorization` header.
+5. **JMeter reads the secret once per thread.** The `Secret Variables` User Defined Variables element calls Azure Load Testing's custom `GetSecret` function, `${__GetSecret(API_KEY)}`, and stores the result in `udv_apiKey`. Microsoft Learn states this function works only when the JMeter script runs in Azure Load Testing, not when run locally, and documents the user-defined-variable placement as the supported pattern.
+6. **JMeter verifies the value arrived.** `SecretResolutionCheck` runs once per thread, before any HTTP traffic is judged, and fails when `udv_apiKey` is null, blank, or still an unresolved placeholder. It logs only the value length and a truncated SHA-256 fingerprint.
+7. **JMeter sends the secret to the app.** The script sends `Authorization: Bearer ${udv_apiKey}` on the `/api/accounts/${accountId}/balance` and `/health` samplers. It is not in the URL, not in query parameters, and not in the request body.
+8. **The application ignores it today.** `GET /api/accounts/{account_id}/balance` returns data without requiring a key. Live read-only checks returned `200` for both no `Authorization` header and a deliberately wrong `Authorization` header.
+
+### 24.3.1 Failure signature: `__GetSecret` called from sampler context
+
+This is the single most confusing failure in this demo, because the run still looks healthy.
+
+**What the engine log shows**
+
+```text
+ERROR c.a.c.j.j.f.GetSecret: __GetSecret function is not allowed in a sampler or a listener
+```
+
+repeated roughly once per request, interleaved with ordinary `Thread started` and `summary +` lines, and with `Err: 0 (0.00%)`.
+
+**What it means**
+
+Azure Load Testing refuses to evaluate `__GetSecret` when the call happens in sampler or listener context. This is a placement rejection inside the engine. **It is not a Key Vault failure.** No Key Vault call is attempted, so it says nothing about RBAC, the secret URI, the reference identity, or vault networking.
+
+Putting the function directly in an HTTP Header Manager value triggers it, because a header value is re-resolved on every request and therefore evaluates inside the sampler. The previous revision of `contoso-bank-secrets.jmx` did exactly that.
+
+**Why the run still went green**
+
+Three things lined up:
+
+1. The function returned nothing usable, so the `Authorization` header went out unresolved or empty.
+2. The Contoso Bank API does not validate the `Authorization` header, so every request still returned `200`.
+3. Nothing in the test asserted that the secret had resolved, so `percentage(error)` stayed at `0.0%`.
+
+That is the anatomy of a false green: the transport was broken, and every signal the test collected said "fine".
+
+**The fix**
+
+Resolve the secret in a User Defined Variables element, which JMeter evaluates at thread start rather than in sampler context, and reference the variable everywhere else:
+
+```xml
+<Arguments guiclass="ArgumentsPanel" testclass="Arguments" testname="Secret Variables" enabled="true">
+  <collectionProp name="Arguments.arguments">
+    <elementProp name="udv_apiKey" elementType="Argument">
+      <stringProp name="Argument.name">udv_apiKey</stringProp>
+      <stringProp name="Argument.value">${__GetSecret(API_KEY)}</stringProp>
+      <stringProp name="Argument.metadata">=</stringProp>
+    </elementProp>
+  </collectionProp>
+</Arguments>
+```
+
+```xml
+<stringProp name="Header.name">Authorization</stringProp>
+<stringProp name="Header.value">Bearer ${udv_apiKey}</stringProp>
+```
+
+The same rule applies to any other sampler-scoped location: request bodies, query parameters, assertion patterns, listener fields, and JSR223 elements attached to a sampler. Resolve once into a variable, then use the variable.
+
+### 24.3.2 How to tell whether the secret was actually fetched
+
+Ordered from cheapest to most conclusive. Never print the value itself.
+
+| # | Check | Where | A healthy result looks like | A broken result looks like |
+|---|---|---|---|---|
+| 1 | Search the engine logs for `GetSecret` | Test run → **Logs** → download the engine log ZIP | No `c.a.c.j.j.f.GetSecret` lines at all | `__GetSecret function is not allowed in a sampler or a listener`, or a Key Vault access error |
+| 2 | Look for the `SecretResolutionCheck` sampler | Test run dashboard, requests table | Present, `0%` errors, and the run passes the `SecretResolutionCheck: percentage(error) > 0` criterion | Missing (old script), or present with `100%` errors |
+| 3 | Read the check's log line | Engine log | `Key Vault secret API_KEY resolved. length=<n> sha256_prefix=<8 hex chars>` | `Key Vault secret API_KEY was NOT resolved: ...` followed by the things to check |
+| 4 | Compare the fingerprint across runs | Engine log | The same `sha256_prefix` before and after a rotation-free redeploy; a different one after a genuine rotation | An unexpected change means the wrong secret or the wrong version is being served |
+| 5 | Confirm the service stored a URI, not a value | `az load test show --test-id contoso-bank-secrets-kv` | `API_KEY` is reported as an `AKV_SECRET_URI` | Missing secret parameter, or a name that does not match the `__GetSecret` argument |
+| 6 | Prove end-to-end acceptance | Application | The protected endpoint returns `401` without the token and `200` with it | `200` either way, which is today's state until §24.6.1 is implemented |
+
+Checks 1-5 prove the value reached the engine. Only check 6 proves the value is **correct**, and it requires the application change in §24.6.1.
+
+The fingerprint in check 3 is a truncated SHA-256 of the secret. It is one-way, so it is safe to keep in run artefacts, and it is stable, so it is the practical way to answer "did this run use the same secret as the last one?" without ever revealing the secret.
+
+**Reading the length alone is already diagnostic.** A length of `0` means the parameter resolved to an empty string, which usually means a name mismatch between the YAML `secrets:` entry and the `__GetSecret` argument. A length matching `${__GetSecret(API_KEY)}` means the function never ran at all, which is the placement error in §24.3.1.
 
 ---
 
@@ -213,14 +291,7 @@ Implementation notes:
 
 ### 24.6.2 Keep the positive JMeter test
 
-The positive JMX should continue to send the header:
-
-```xml
-<stringProp name="Header.name">Authorization</stringProp>
-<stringProp name="Header.value">Bearer ${__GetSecret(API_KEY)}</stringProp>
-```
-
-For readability and easier debugging, consider changing the direct call into a user-defined variable:
+The positive JMX already resolves the secret once and sends the variable on every request. Keep that shape; do not "simplify" it back into a direct call in the header, which is the §24.3.1 failure:
 
 ```xml
 <elementProp name="udv_apiKey" elementType="Argument">
@@ -232,6 +303,8 @@ For readability and easier debugging, consider changing the direct call into a u
 <stringProp name="Header.name">Authorization</stringProp>
 <stringProp name="Header.value">Bearer ${udv_apiKey}</stringProp>
 ```
+
+Keep `SecretResolutionCheck` and its fail criterion too. Once the application enforces the key, an unresolved secret would show up as a wall of `401`s; until then, the check is the only thing standing between a broken secret path and a green run.
 
 The positive YAML remains a Key Vault URI test:
 
@@ -332,7 +405,8 @@ env:
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Secret resolves to empty string | The configured secret name does not match the JMeter `GetSecret` argument; the CI/CD run did not pass a value; the JMX is being run locally where Azure Load Testing's `GetSecret` function is unavailable; or the test was rerun from the portal after a pipeline-only secret was used. | Make the YAML/action secret name exactly match `${__GetSecret(API_KEY)}`; pass the secret again for each CI/CD run; do not rely on local JMeter for `GetSecret`; use a safe diagnostic assertion on response code only, never print the secret. |
+| Engine log repeats `__GetSecret function is not allowed in a sampler or a listener`, yet the run reports `0.0%` errors | `__GetSecret` is being evaluated in sampler or listener context, most often because it sits directly in an HTTP Header Manager value, a request body, a query parameter, or an assertion. Azure Load Testing rejects the call before any Key Vault request is made, so this is **not** a Key Vault, RBAC, or network problem. | Move the call into a User Defined Variables element and reference the resulting variable everywhere else. Full explanation and the exact XML are in §24.3.1. |
+| Secret resolves to empty string | The configured secret name does not match the JMeter `GetSecret` argument; the CI/CD run did not pass a value; the JMX is being run locally where Azure Load Testing's `GetSecret` function is unavailable; or the test was rerun from the portal after a pipeline-only secret was used. | Make the YAML/action secret name exactly match `${__GetSecret(API_KEY)}`; pass the secret again for each CI/CD run; do not rely on local JMeter for `GetSecret`; confirm with the `SecretResolutionCheck` length and fingerprint (§24.3.2) rather than printing the value. |
 | `403` from Key Vault | The load-test managed identity lacks secret `Get` permission, the role assignment has not propagated, or the vault firewall/network rules block the caller. | Confirm `Key Vault Secrets User` on the vault for the exact load-test identity or selected user-assigned identity; wait for RBAC propagation; confirm the vault network path. |
 | Vault public access disabled by policy | Azure Policy changed the effective Key Vault network posture after Terraform creation. In the live check, `publicNetworkAccess` was `Disabled`. | Get a policy exemption or approved design for trusted Microsoft services/private endpoint access; otherwise use the CI/CD secret path only as a demo workaround. |
 | Test validates but fails at run time | Test creation validates the shape of the Key Vault URI and test definition, but the actual secret value is fetched at run time. Network or RBAC failures surface later. | Run a cheap pre-flight after provisioning that checks the load-test identity, role assignment, vault network setting, and test definition. Do not assume create/update success proves run-time secret access. |

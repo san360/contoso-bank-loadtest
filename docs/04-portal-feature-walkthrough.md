@@ -109,7 +109,7 @@ Script + supporting files. Mention the **`splitAllCSVs`** option: with 10 engine
 | Type | Use |
 |---|---|
 | **Environment variables** | Non-sensitive config — base URL, test data size, feature flags |
-| **Secrets** | A **Key Vault secret URI**, resolved at runtime via managed identity. In JMeter, read via the `GetSecret` function; in Locust, exposed as an env var |
+| **Secrets** | A **Key Vault secret URI**, resolved at runtime via managed identity. In JMeter, read it into a User Defined Variables element with the `GetSecret` function and reference that variable elsewhere; in Locust, exposed as an env var |
 | **Certificates** | A Key Vault certificate for **mTLS / client-certificate authentication** — very common in banking APIs |
 
 **Say out loud:** *"Credentials are never in the script and never in Git. They're referenced from Key Vault and resolved by managed identity at run time."*
