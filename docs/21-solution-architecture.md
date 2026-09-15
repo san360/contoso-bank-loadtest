@@ -183,15 +183,18 @@ sequenceDiagram
 
 ### The verdict rule — implemented identically in all three places
 
-`status` and `testResult` do **not** settle at the same instant. The aggregate `testResult` can still read `NOT_APPLICABLE` a minute after `status` becomes `DONE`, while the per-criterion results are already correct. So:
+`status` and the pass/fail verdict do **not** settle at the same instant. Measured on run `contoso-bank-peak-load-runall-20260915-102506`: at the first `DONE` response `testResult` was `NOT_APPLICABLE` and the six `passFailMetrics` entries carried **no `result` property at all**; 97 seconds later both signals settled together to `FAILED` with 5 of 6 criteria breached. Reading either signal at `DONE` is therefore a false green. So:
 
 ```
-any criterion result == "failed"   -> FAILED
-criteria exist, none failed        -> PASSED
-no criteria at all                 -> NOT_APPLICABLE  (the false green - docs/07 §7.2)
+wait until testResult is PASSED or FAILED   (skip for criteria-less tests - they never leave NOT_APPLICABLE)
+
+no criteria at all                          -> NOT_APPLICABLE  (the real false green - docs/07 §7.2)
+any criterion failed OR testResult FAILED   -> FAILED
+testResult PASSED and nothing failed        -> PASSED
+never settled                               -> UNSETTLED       (never treated as a pass)
 ```
 
-`tools/run_loadtest.ps1`, `tools/run_loadtest.sh`, `tools/e2e-test.ps1` and the *Enforce load test outcome* step in `loadtest.yml` all apply exactly this rule, and all report the disagreement rather than hiding it.
+`tools/run_loadtest.ps1`, `tools/run_loadtest.sh`, `tools/e2e-test.ps1` and the *Enforce load test outcome* step in `loadtest.yml` all apply exactly this rule, and all exit non-zero on anything short of positive proof of a pass.
 
 ---
 

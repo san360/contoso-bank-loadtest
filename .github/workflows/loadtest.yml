@@ -228,29 +228,62 @@ jobs:
               ;;
           esac
 
-          # The aggregate testResult field lags. Measured on run
-          # verify-cutover-20260830-163946: still NOT_APPLICABLE more than 60s
-          # after status reached DONE, settling to FAILED only later. The
-          # per-criterion results, however, were already correct and complete in
-          # the first DONE response. So derive the verdict from the criteria and
-          # treat testResult as advisory - we never branch on it.
+          # WAIT FOR THE VERDICT TO SETTLE BEFORE JUDGING IT.
+          #
+          # An earlier version of this gate read the criteria from the first DONE
+          # response and treated testResult as advisory, on the assumption that
+          # the per-criterion results were already correct. That assumption is
+          # WRONG and it made this gate report green on a failing run.
+          #
+          # MEASURED on 2026-09-15 against alt-loadtest-27d2e5: at the instant
+          # status flipped to DONE, testResult was NOT_APPLICABLE and the six
+          # passFailMetrics entries carried NO result property at all. Minutes
+          # later the same run reported avg(response_time_ms) 2725 against a
+          # 500ms criterion - a breach the gate had already waved through.
+          # Runs contoso-bank-pr-gate / url-smoke / secrets-kv -runall-20260915-102506
+          # all reproduced it.
+          #
+          # So: poll until testResult resolves to PASSED or FAILED, then take the
+          # pessimistic reading of both signals. Never exit 0 without positive
+          # proof of a pass.
+          settle_deadline=$(( $(date +%s) + 300 ))
+          while [ "$(date +%s)" -lt "$settle_deadline" ]; do
+            case "$result" in
+              PASSED|FAILED) break ;;
+            esac
+            echo "verdict not settled yet (testResult=$result); waiting..."
+            sleep 15
+            run_json=$(az load test-run show \
+              --load-test-resource "$LOAD_TEST_RESOURCE" \
+              --resource-group "$RESOURCE_GROUP" \
+              --test-run-id "$RUN_ID" \
+              --query "{status:status,testResult:testResult,criteria:passFailCriteria.passFailMetrics}" \
+              -o json)
+            result=$(printf '%s' "$run_json" | jq -r '.testResult // "UNKNOWN"')
+          done
+
           criteria_json=$(printf '%s' "$run_json" | jq '.criteria')
           [ -n "$criteria_json" ] || criteria_json="null"
 
           criteria_total=$(printf '%s' "$criteria_json" | jq 'if . == null then 0 else (to_entries | length) end')
           criteria_failed=$(printf '%s' "$criteria_json" | jq '[ (. // {}) | to_entries[] | select(.value.result == "failed") ] | length')
 
-          echo "criteria: total=$criteria_total failed=$criteria_failed (advisory testResult=$result)"
+          echo "criteria: total=$criteria_total failed=$criteria_failed (testResult=$result)"
 
           if [ "$criteria_total" -eq 0 ]; then
             echo "::notice title=Criteria-less teaching artefact::$TEST_ID has no failureCriteria, so the run is informational only. This is the false green described in docs/07."
             exit 0
           fi
 
-          if [ "$criteria_failed" -gt 0 ]; then
+          if [ "$criteria_failed" -gt 0 ] || [ "$result" = "FAILED" ]; then
             printf '%s' "$criteria_json" \
               | jq -r 'to_entries[] | select(.value.result == "failed") | "  breached: \(.value.aggregate)(\(.value.clientMetric)) \(.value.condition) \(.value.value) — actual \(.value.actualValue)"'
-            echo "::error title=Performance regression::$criteria_failed of $criteria_total fail criteria breached. Open the Azure Load Testing run or the loadTestResults artifact for details."
+            echo "::error title=Performance regression::$criteria_failed of $criteria_total fail criteria breached (testResult=$result). Open the Azure Load Testing run or the loadTestResults artifact for details."
+            exit 1
+          fi
+
+          if [ "$result" != "PASSED" ]; then
+            echo "::error title=Verdict never settled::testResult was still '$result' after waiting. Refusing to report a pass without positive proof - re-read run $RUN_ID before trusting it."
             exit 1
           fi
 

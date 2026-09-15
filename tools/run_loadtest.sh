@@ -284,33 +284,89 @@ if [ -z "$status" ]; then
     exit 2
 fi
 
-# Derive the verdict from the per-criterion results. The aggregate testResult field
-# can still read NOT_APPLICABLE for a minute or more after status reaches DONE.
+# Wait for the verdict to SETTLE, not just for the run to finish.
+#
+# MEASURED, not assumed: at the moment status first flips to DONE this service
+# reports testResult = NOT_APPLICABLE *and* every passFailMetrics entry still
+# reads result = "passed". The criteria settle to their real values later. Run
+# contoso-bank-pr-gate-runall-20260915-102506 read as 0/4 criteria failed at
+# first DONE and later as 3/4 failed (avg 2725ms against a 500ms criterion).
+# Reading either signal too early therefore produces a FALSE GREEN, which is the
+# worst possible outcome for a gate. See docs/07 section 7.2.
+settle_deadline=$(( $(date +%s) + SETTLE_TIMEOUT_SECONDS ))
+settled=0
+settle_start=$(date +%s)
+announced=0
+
+criteria_total=$(load_cli test-run show --test-run-id "$RUN_ID" \
+    --query "length(values(passFailCriteria.passFailMetrics))" -o tsv 2>/dev/null || echo 0)
+[ -n "$criteria_total" ] || criteria_total=0
+
+if [ "$status" != "DONE" ] || [ "$criteria_total" -eq 0 ]; then
+    # A criteria-less test never resolves past NOT_APPLICABLE, and a run that did
+    # not complete has no verdict to wait for.
+    settled=1
+fi
+
+reported_result=$(load_cli test-run show --test-run-id "$RUN_ID" --query testResult -o tsv 2>/dev/null || true)
+
+while [ "$settled" -eq 0 ] && [ "$(date +%s)" -lt "$settle_deadline" ]; do
+    case "$reported_result" in
+        PASSED|FAILED) settled=1; break ;;
+    esac
+    if [ "$announced" -eq 0 ]; then
+        printf '  DONE - waiting for the pass/fail verdict to settle...\n'
+        announced=1
+    fi
+    sleep 10
+    reported_result=$(load_cli test-run show --test-run-id "$RUN_ID" --query testResult -o tsv 2>/dev/null || true)
+done
+
+settle_seconds=$(( $(date +%s) - settle_start ))
+
 criteria_total=$(load_cli test-run show --test-run-id "$RUN_ID" \
     --query "length(values(passFailCriteria.passFailMetrics))" -o tsv 2>/dev/null || echo 0)
 criteria_failed=$(load_cli test-run show --test-run-id "$RUN_ID" \
     --query "length(values(passFailCriteria.passFailMetrics)[?result=='failed'])" -o tsv 2>/dev/null || echo 0)
-reported_result=$(load_cli test-run show --test-run-id "$RUN_ID" --query testResult -o tsv 2>/dev/null || true)
 [ -n "$criteria_total" ] || criteria_total=0
 [ -n "$criteria_failed" ] || criteria_failed=0
 
+# Take the pessimistic reading of the two signals: either one reporting failure
+# is a failure, and anything short of positive proof of a pass is UNSETTLED.
 if [ "$criteria_total" -eq 0 ]; then
     verdict="NOT_APPLICABLE"
-elif [ "$criteria_failed" -gt 0 ]; then
+elif [ "$status" != "DONE" ]; then
+    verdict="NO_VERDICT"
+elif [ "$settled" -eq 0 ]; then
+    verdict="UNSETTLED"
+elif [ "$criteria_failed" -gt 0 ] || [ "$reported_result" = "FAILED" ]; then
     verdict="FAILED"
-else
+elif [ "$reported_result" = "PASSED" ]; then
     verdict="PASSED"
+else
+    verdict="UNSETTLED"
 fi
 
 say_step "Run summary"
 printf '  test id       : %s\n' "$TEST_ID"
 printf '  run id        : %s\n' "$RUN_ID"
 printf '  status        : %s\n' "$status"
-printf '  verdict       : %s  (%s/%s criteria failed)\n' "$verdict" "$criteria_failed" "$criteria_total"
+printf '  verdict       : %s  (%s/%s criteria failed, testResult=%s)\n' "$verdict" "$criteria_failed" "$criteria_total" "$reported_result"
+if [ "$settle_seconds" -gt 0 ]; then
+    printf '  settled after : %ss past the terminal state\n' "$settle_seconds"
+fi
 
-if [ -n "$reported_result" ] && [ "$reported_result" != "$verdict" ]; then
-    printf "  note          : the service still reports testResult='%s'.\n" "$reported_result"
-    printf '                  That field settles after the criteria do; the criteria are authoritative.\n'
+if [ "$verdict" = "NO_VERDICT" ]; then
+    printf '  warning       : the run did not complete, so there is no performance conclusion.\n'
+    printf '                  status=%s means the test infrastructure, script, secrets or network path\n' "$status"
+    printf '                  failed - your test is broken, not necessarily your app. Engine logs:\n'
+    printf '                  az load test-run download-files --test-run-id %s --path ./logs --log --force\n' "$RUN_ID"
+elif [ "$verdict" = "UNSETTLED" ]; then
+    printf '  warning       : the verdict had not settled when this script gave up waiting.\n'
+    printf '                  Re-read the run before trusting it - do NOT treat this as a pass.\n'
+elif [ "$reported_result" = "FAILED" ] && [ "$criteria_failed" -eq 0 ]; then
+    printf "  note          : testResult says FAILED while every criterion still reads 'passed'.\n"
+    printf '                  The per-criterion results lag; the failing verdict is authoritative.\n'
 fi
 
 if [ "$criteria_total" -eq 0 ]; then
@@ -356,7 +412,12 @@ if [ "$DOWNLOAD" -eq 1 ]; then
     fi
 fi
 
-if [ "$status" != "DONE" ] || [ "$verdict" = "FAILED" ]; then
+# Anything that is not an unambiguous pass exits non-zero. A gate that cannot
+# prove the run passed must not report success.
+case "$verdict" in
+    FAILED|UNSETTLED|NO_VERDICT) exit 1 ;;
+esac
+if [ "$status" != "DONE" ]; then
     exit 1
 fi
 exit 0

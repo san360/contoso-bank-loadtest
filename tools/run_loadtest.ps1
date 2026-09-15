@@ -288,7 +288,38 @@ function New-DefaultRunId {
 }
 
 function Wait-TestRun {
-    param([Parameter(Mandatory = $true)][string]$RunIdToWatch, [int]$TimeoutMinutes)
+    <#
+      Waits for the run to reach a terminal state AND for its verdict to settle.
+
+      MEASURED, not assumed. On this subscription, at the moment `status` first
+      flips to DONE the run reports testResult = NOT_APPLICABLE *and* every entry
+      in passFailCriteria.passFailMetrics still reads result = "passed". The
+      criteria only settle to their real values some time later.
+
+      Evidence - run contoso-bank-pr-gate-runall-20260915-102506 was read as
+      0/4 criteria failed at first DONE, and minutes later as:
+        failed  avg(response_time_ms) > 500   actual 2725
+        failed  p95(response_time_ms) > 1500  actual 17900
+        failed  p95(response_time_ms) > 800   actual 870
+      Same for contoso-bank-url-smoke and contoso-bank-secrets-kv in the same batch.
+
+      So reading the criteria at first DONE produces a FALSE GREEN - the single
+      most dangerous outcome for a performance gate. We therefore keep polling
+      after DONE until the verdict settles:
+
+        criteria exist  -> wait until testResult is PASSED or FAILED, then the
+                           per-criterion results can be trusted
+        no criteria     -> testResult stays NOT_APPLICABLE for ever, so settle
+                           immediately (this is the real false green of docs/07 7.2)
+
+      If the verdict has not settled within -SettleTimeoutSeconds we return the
+      run marked unsettled, and the caller fails rather than reporting green.
+    #>
+    param(
+        [Parameter(Mandatory = $true)][string]$RunIdToWatch,
+        [int]$TimeoutMinutes,
+        [int]$SettleTimeoutSeconds = 300
+    )
 
     $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
     $terminal = @('DONE', 'FAILED', 'CANCELLED')
@@ -300,7 +331,9 @@ function Wait-TestRun {
             $run = $result.Output | ConvertFrom-Json
             $status = [string](Get-ObjectPropertyValue $run 'status')
 
-            if ($terminal -contains $status) { return $run }
+            if ($terminal -contains $status) {
+                return (Wait-RunVerdictSettled -Run $run -RunIdToWatch $RunIdToWatch -SettleTimeoutSeconds $SettleTimeoutSeconds)
+            }
 
             if ($status -ne $lastStatus) {
                 Write-Host "  $status..." -ForegroundColor DarkGray
@@ -313,25 +346,87 @@ function Wait-TestRun {
     return $null
 }
 
-function Get-RunVerdict {
+function Get-CriteriaMetrics {
     param([object]$Run)
 
-    # Derive the verdict from the per-criterion results rather than the aggregate
-    # testResult field: the aggregate can still read NOT_APPLICABLE for a minute or
-    # more after status reaches DONE, while the criteria are already correct.
     $criteria = Get-ObjectPropertyValue (Get-ObjectPropertyValue $Run 'passFailCriteria') 'passFailMetrics'
-    $metrics = @()
-    if ($criteria) { $metrics = @($criteria.PSObject.Properties | ForEach-Object { $_.Value }) }
+    if (-not $criteria) { return @() }
+    return @($criteria.PSObject.Properties | ForEach-Object { $_.Value })
+}
 
+function Wait-RunVerdictSettled {
+    param(
+        [Parameter(Mandatory = $true)][object]$Run,
+        [Parameter(Mandatory = $true)][string]$RunIdToWatch,
+        [int]$SettleTimeoutSeconds = 300
+    )
+
+    $status = [string](Get-ObjectPropertyValue $Run 'status')
+    $metrics = @(Get-CriteriaMetrics -Run $Run)
+
+    # A criteria-less test can never resolve past NOT_APPLICABLE, and a run that
+    # never completed has no verdict to wait for.
+    if ($metrics.Count -eq 0 -or $status -ne 'DONE') {
+        return [pscustomobject]@{ Run = $Run; Settled = $true; SettleSeconds = 0 }
+    }
+
+    $settleDeadline = (Get-Date).AddSeconds($SettleTimeoutSeconds)
+    $started = Get-Date
+    $announced = $false
+    $current = $Run
+
+    while ((Get-Date) -lt $settleDeadline) {
+        $reported = [string](Get-ObjectPropertyValue $current 'testResult')
+        if ($reported -in @('PASSED', 'FAILED')) {
+            return [pscustomobject]@{
+                Run           = $current
+                Settled       = $true
+                SettleSeconds = [math]::Round(((Get-Date) - $started).TotalSeconds)
+            }
+        }
+
+        if (-not $announced) {
+            Write-Host "  DONE - waiting for the pass/fail verdict to settle..." -ForegroundColor DarkGray
+            $announced = $true
+        }
+
+        Start-Sleep -Seconds 10
+        $result = Invoke-LoadCli @('test-run', 'show', '--test-run-id', $RunIdToWatch, '-o', 'json')
+        if ($result.Ok -and -not [string]::IsNullOrWhiteSpace($result.Output)) {
+            $current = $result.Output | ConvertFrom-Json
+        }
+    }
+
+    return [pscustomobject]@{
+        Run           = $current
+        Settled       = $false
+        SettleSeconds = [math]::Round(((Get-Date) - $started).TotalSeconds)
+    }
+}
+
+function Get-RunVerdict {
+    param([object]$Run, [bool]$Settled = $true)
+
+    # Read BOTH signals and take the pessimistic one. The per-criterion results
+    # and the aggregate testResult settle at different times (see Wait-TestRun),
+    # so trusting either alone can produce a false green.
+    # PowerShell unrolls an empty array returned from a function into $null, so
+    # the @() wrapper here is load-bearing: without it a criteria-less run throws.
+    $metrics = @(Get-CriteriaMetrics -Run $Run)
     $failed = @($metrics | Where-Object { (Get-ObjectPropertyValue $_ 'result') -eq 'failed' })
+    $reported = [string](Get-ObjectPropertyValue $Run 'testResult')
+    $status = [string](Get-ObjectPropertyValue $Run 'status')
 
     $verdict = if ($metrics.Count -eq 0) { 'NOT_APPLICABLE' }
-    elseif ($failed.Count -gt 0) { 'FAILED' }
-    else { 'PASSED' }
+    elseif ($status -ne 'DONE') { 'NO_VERDICT' }
+    elseif (-not $Settled) { 'UNSETTLED' }
+    elseif ($failed.Count -gt 0 -or $reported -eq 'FAILED') { 'FAILED' }
+    elseif ($reported -eq 'PASSED') { 'PASSED' }
+    else { 'UNSETTLED' }
 
     return [pscustomobject]@{
         Verdict        = $verdict
-        ReportedResult = [string](Get-ObjectPropertyValue $Run 'testResult')
+        ReportedResult = $reported
         CriteriaCount  = $metrics.Count
         Failed         = $failed
     }
@@ -352,11 +447,21 @@ function Show-RunSummary {
         'FAILED' { 'Red' }
         default { 'Yellow' }
     }
-    Write-Host "  verdict       : $($Verdict.Verdict)  ($($Verdict.Failed.Count)/$($Verdict.CriteriaCount) criteria failed)" -ForegroundColor $colour
+    Write-Host "  verdict       : $($Verdict.Verdict)  ($($Verdict.Failed.Count)/$($Verdict.CriteriaCount) criteria failed, testResult=$($Verdict.ReportedResult))" -ForegroundColor $colour
 
-    if ($Verdict.ReportedResult -and $Verdict.ReportedResult -cne $Verdict.Verdict) {
-        Write-Host "  note          : the service still reports testResult='$($Verdict.ReportedResult)'." -ForegroundColor Yellow
-        Write-Host "                  That field settles after the criteria do; the criteria are authoritative." -ForegroundColor DarkGray
+    if ($Verdict.Verdict -eq 'NO_VERDICT') {
+        Write-Host "  warning       : the run did not complete, so there is no performance conclusion." -ForegroundColor Yellow
+        Write-Host "                  status=$status means the test infrastructure, script, secrets or network path failed" -ForegroundColor DarkGray
+        Write-Host "                  - your test is broken, not necessarily your app. Download the engine logs:" -ForegroundColor DarkGray
+        Write-Host "                  az load test-run download-files --test-run-id $script:RunId --path ./logs --log --force" -ForegroundColor DarkGray
+    }
+    elseif ($Verdict.Verdict -eq 'UNSETTLED') {
+        Write-Host "  warning       : the verdict had not settled when this script gave up waiting." -ForegroundColor Yellow
+        Write-Host "                  Re-read the run before trusting it - do NOT treat this as a pass." -ForegroundColor DarkGray
+    }
+    elseif ($Verdict.ReportedResult -eq 'FAILED' -and $Verdict.Failed.Count -eq 0) {
+        Write-Host "  note          : testResult says FAILED while every criterion still reads 'passed'." -ForegroundColor Yellow
+        Write-Host "                  The per-criterion results lag; the failing verdict is taken as authoritative." -ForegroundColor DarkGray
     }
 
     if ($Verdict.CriteriaCount -eq 0) {
@@ -462,13 +567,18 @@ try {
     }
 
     Write-Step "Waiting for the run to finish (timeout ${TimeoutMinutes}m)"
-    $run = Wait-TestRun -RunIdToWatch $script:RunId -TimeoutMinutes $TimeoutMinutes
-    if ($null -eq $run) {
+    $outcome = Wait-TestRun -RunIdToWatch $script:RunId -TimeoutMinutes $TimeoutMinutes
+    if ($null -eq $outcome) {
         Write-Warning "Run '$($script:RunId)' had not reached a terminal state after $TimeoutMinutes minute(s). It is still running in Azure."
         exit 2
     }
 
-    $verdict = Get-RunVerdict -Run $run
+    $run = $outcome.Run
+    if ($outcome.SettleSeconds -gt 0) {
+        Write-Host "  verdict settled $($outcome.SettleSeconds)s after the run reached a terminal state." -ForegroundColor DarkGray
+    }
+
+    $verdict = Get-RunVerdict -Run $run -Settled $outcome.Settled
     Show-RunSummary -Run $run -Verdict $verdict
 
     if ($DownloadResults) {
@@ -479,8 +589,10 @@ try {
         Save-RunArtefacts -Destination $destination
     }
 
+    # Anything that is not an unambiguous pass exits non-zero. A gate that cannot
+    # prove the run passed must not report success.
     $status = [string](Get-ObjectPropertyValue $run 'status')
-    if ($status -ne 'DONE' -or $verdict.Verdict -eq 'FAILED') { exit 1 }
+    if ($status -ne 'DONE' -or $verdict.Verdict -in @('FAILED', 'UNSETTLED', 'NO_VERDICT')) { exit 1 }
     exit 0
 }
 catch {

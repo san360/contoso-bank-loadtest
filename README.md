@@ -10,12 +10,12 @@ It contains a documented session agenda, a purpose-built banking API with delibe
 
 | Folder | Contents |
 |---|---|
-| [`docs/`](./docs) | The session agenda and presenter runbook — 22 numbered documents (00–21) |
+| [`docs/`](./docs) | The session agenda and presenter runbook — 26 numbered documents (00–25) |
 | [`src/`](./src) | **Contoso Bank API** — the system under test |
 | [`loadtests/`](./loadtests) | JMeter, Locust, URL-based and cURL-based tests, plus YAML configs and test data |
 | [`infra/`](./infra) | Terraform IaC used by `azd up` |
 | [`.github/workflows/`](./.github/workflows) | GitHub Actions performance gate (OIDC, no stored secrets) |
-| [`tools/`](./tools) | `azd up` load-test provisioning hooks, [`run_loadtest.ps1`/`.sh`](./tools) one-command test runners, [`e2e-test.ps1`](./tools/e2e-test.ps1) end-to-end validation, hostname retargeting, VUH costing, and the harness that proves the planted bottlenecks actually bite |
+| [`tools/`](./tools) | `azd up` load-test provisioning hooks, [`run_loadtest.ps1`/`.sh`](./tools) one-command test runners, [`compare_runs.ps1`](./tools/compare_runs.ps1) before/after run comparison, [`e2e-test.ps1`](./tools/e2e-test.ps1) end-to-end validation, hostname retargeting, VUH costing, and the harness that proves the planted bottlenecks actually bite |
 
 ---
 
@@ -124,6 +124,10 @@ Start with [`docs/00-agenda-and-runbook.md`](./docs/00-agenda-and-runbook.md).
 | 19 | [Recording walkthrough and test catalog](./docs/19-recording-and-test-catalog.md) |
 | 20 | [Private network integration (VNet injection) — research](./docs/20-private-network-integration.md) |
 | 21 | [**Solution architecture — this repository, end to end**](./docs/21-solution-architecture.md) |
+| 22 | [Multiple runs and comparison](./docs/22-multiple-runs-and-comparison.md) |
+| 23 | [VNet-injected test case — private network plan](./docs/23-vnet-injected-test-case.md) |
+| 24 | [Secrets from Key Vault — audit and hardening plan](./docs/24-secrets-from-key-vault.md) |
+| 25 | [Simulating JWT user identity](./docs/25-simulating-jwt-user-identity.md) |
 
 Sections 02, 07, 11, 12, 13, 14, 17, 18 and 19 were added to the original agenda — see doc 00 for the rationale.
 

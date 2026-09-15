@@ -44,7 +44,7 @@ Azure Load Testing reports **two independent outcomes** for every run. Almost ev
 | "**Error**" | `FAILED` / `VALIDATION_FAILURE` | — | Engine, script or configuration failure. **Your test is broken, not your app.** No performance conclusion is available | Fix the test. Check engine health, JMX validity, secrets, network reachability |
 | "**Failed**" | `DONE` | `FAILED` | Ran cleanly, **breached a fail criterion**. This is a *successful test* that found a *real problem* | Investigate the app. This is the outcome you want your gate to produce |
 | "**Completed**" ✅ | `DONE` | `PASSED` | Ran cleanly, met every criterion. A genuine pass | Baseline it |
-| "**Completed**" 🚨 | `DONE` | `NOT_APPLICABLE` | **Usually: no fail criteria were defined.** The run is green because nothing was asked of it — *including runs where 100% of requests failed*. But see §7.2.4: it can also mean the aggregate simply hasn't settled yet | Check the run's `passFailMetrics`. Empty → **never accept this**, add criteria and re-run. Non-empty → read each criterion's own `result` |
+| "**Completed**" 🚨 | `DONE` | `NOT_APPLICABLE` | **Usually: no fail criteria were defined.** The run is green because nothing was asked of it — *including runs where 100% of requests failed*. But see §7.2.4: it can also mean the verdict simply hasn't settled yet | Check the run's `passFailMetrics`. Empty → **never accept this**, add criteria and re-run. Non-empty → the verdict is still settling; keep polling until `testResult` is `PASSED` or `FAILED` |
 
 > ### 🚨 The silent-failure trap — say this out loud in the session
 >
@@ -68,46 +68,54 @@ graph TD
     E -->|"FAILED"| G["Genuine finding.<br/>Investigate the app"]
     E -->|"NOT_APPLICABLE"| N{"Does the run carry<br/>passFailMetrics?"}
     N -->|"No / null"| H["FALSE GREEN<br/>No criteria defined"]
-    N -->|"Yes"| I["Aggregate has not settled.<br/>Read each criterion's own result"]
+    N -->|"Yes"| I["Verdict has not settled yet.<br/>Keep polling - see 7.2.4"]
     H --> H1["Tells you nothing.<br/>Could be 100% errors.<br/>Add criteria, re-run"]
-    I --> I1["Any result = failed -> FAILED<br/>otherwise PASSED"]
+    I --> I1["Wait for PASSED/FAILED.<br/>Never read it as a pass"]
 ```
 
-### 7.2.4 `testResult` lags — measured, not theorised
+### 7.2.4 The verdict settles *after* the run finishes — measured, not theorised
 
-The decision tree above has one extra branch for a reason. **`status` and `testResult` do not become final at the same instant**, and the gap is far wider than the "wait a few seconds" advice usually given.
+The decision tree above has one extra branch for a reason. **`status` and the pass/fail verdict do not become final at the same instant**, and the gap is far wider than the "wait a few seconds" advice usually given.
 
-Measured in this kit, on run `verify-cutover-20260830-163946` (`contoso-bank-url-smoke`, 2 criteria):
+Measured on 2026-09-15 against `alt-loadtest-27d2e5`, run `contoso-bank-peak-load-runall-20260915-102506` (6 criteria), polled every 12 seconds:
 
 | Moment | `status` | `testResult` | `passFailCriteria.passFailMetrics` |
 |---|---|---|---|
-| First response where status is terminal | `DONE` | `NOT_APPLICABLE` | `avg(response_time_ms)` **already** marked `"failed"` — actual `3978` vs `> 500` |
-| Still >60 seconds later | `DONE` | `NOT_APPLICABLE` | unchanged, still correct |
-| Minutes later | `DONE` | `FAILED` | unchanged, still correct |
+| First response where status is terminal | `DONE` | `NOT_APPLICABLE` | 6 criteria present, **none carrying a `result` property at all** |
+| +12s … +85s | `DONE` | `NOT_APPLICABLE` | unchanged — still no `result` values |
+| **+97s** | `DONE` | `FAILED` | **5 of 6 marked `failed`** — e.g. `avg(response_time_ms)` actual `2725` vs `> 500` |
 
-Two conclusions, both of which shape how this kit is built:
+Both signals settled **together**, 97 seconds after `DONE`.
 
-1. **The per-criterion results are correct and complete as soon as the run finishes.** The aggregate is derived afterwards and is merely advisory.
-2. **Any gate that polls `testResult` on a bounded retry budget will eventually emit a false green** — the precise failure mode §6.4a exists to teach, reintroduced by the very code meant to catch it.
+> ### ⚠️ This corrects an earlier version of this document
+>
+> A previous revision claimed the per-criterion results were "correct and complete as soon as the run finishes" and told you to treat `testResult` as advisory. **That was wrong**, and acting on it produced exactly the failure this section exists to prevent.
+>
+> In the batch of 2026-09-15, `url-smoke`, `secrets-kv`, `pr-gate` and `peak-load` were all reported as **PASSED** by tooling that read the criteria at the first `DONE` response. Every one of them had actually breached its criteria. `pr-gate` was reported green while `avg(response_time_ms)` was `2725` against a `500` ms limit.
+>
+> Reading *either* signal too early is a false green. The only safe move is to wait for the verdict to settle.
 
 So the rule for automation is:
 
-> **Derive the verdict from `passFailCriteria.passFailMetrics[*].result`, never from `testResult`.**
+> **Wait until `testResult` resolves to `PASSED` or `FAILED`, then take the pessimistic reading of both signals.**
 >
-> - any criterion `failed` → **FAILED**
-> - criteria exist, none failed → **PASSED**
 > - no criteria at all → **NOT_APPLICABLE**, and *that* is the real false green
+> - any criterion `failed`, **or** `testResult = FAILED` → **FAILED**
+> - `testResult = PASSED` and no criterion failed → **PASSED**
+> - still unresolved when your patience runs out → **UNSETTLED**, which must **never** be treated as a pass
 
-Only the third case is a genuine `NOT_APPLICABLE`. This is exactly what [`.github/workflows/loadtest.yml`](../.github/workflows/loadtest.yml) and [`tools/e2e-test.ps1`](../tools/e2e-test.ps1) implement — see [doc 08 §8.6a](08-cicd-integration.md).
+A criteria-less test never leaves `NOT_APPLICABLE`, so settle-waiting must be skipped for those — otherwise every false-green run costs you the full settle timeout.
+
+This is what [`tools/run_loadtest.ps1`](../tools/run_loadtest.ps1), [`tools/run_loadtest.sh`](../tools/run_loadtest.sh), [`.github/workflows/loadtest.yml`](../.github/workflows/loadtest.yml) and [`tools/e2e-test.ps1`](../tools/e2e-test.ps1) all implement — see [doc 08 §8.6a](08-cicd-integration.md).
 
 ```bash
-# The reliable query. Note: on the RUN, not the test definition.
+# Poll until the verdict settles, then read both signals.
 az load test-run show --test-run-id "$RUN_ID" \
   --load-test-resource "$ALT" --resource-group "$RG" \
-  --query "passFailCriteria.passFailMetrics" -o json
+  --query "{result:testResult, criteria:passFailCriteria.passFailMetrics}" -o json
 ```
 
-`e2e-test.ps1` deliberately prints the disagreement rather than waiting it out — the moment where the aggregate says `NOT_APPLICABLE` while the criteria already say `FAILED` is the most persuasive thirty seconds in the whole demo.
+**Budget 2–3 minutes of settling time after `DONE` in any automation**, and make the timeout path fail rather than pass. A gate that cannot prove a run passed must not report success.
 
 ### 7.2.5 The standard to recommend
 

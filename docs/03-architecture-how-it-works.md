@@ -85,7 +85,7 @@ Narrate it in this order: **author → configure → engines spin up → load is
 |---|---|
 | **Engine VM size** | Microsoft-managed `Standard_D4d_v4` — 4 vCPU, 16 GB RAM, Azure Linux |
 | **JMeter runtime** | Apache JMeter 5.6.3 on JDK 21 |
-| **Locust runtime** | Locust 2.33.2 on Python 3.9.19 |
+| **Locust runtime** | Locust 2.46.4 on the engines — **measured 2026-09-15**, not the 2.33.2 on Python 3.9.19 that the documentation states. Do not assume the documented version: an option your local Locust accepts may not exist on the engine, and an unrecognised key in `locust.conf` is parsed as a User class name, killing every engine at start-up with `Unknown User(s)` and a bare `status=FAILED` run |
 | **Execution model** | Every engine instance runs the **full test script independently, in parallel** |
 | **Placement** | Same Azure region as the load testing resource (unless multi-region config is used) |
 | **Billing** | You are **not billed for the VMs** — billing is virtual user hours (doc 12) |

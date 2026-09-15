@@ -493,43 +493,40 @@ function Wait-TestRun {
       the script never depends on that behaviour, and so we can report both
       fields of the status taxonomy.
 
-      THE SETTLING RACE - observed empirically in this environment, and the
-      reason this function is more complicated than it looks.
+      THE SETTLING RACE - observed empirically, and the reason this function is
+      more complicated than it looks.
 
-      `status` and `testResult` do NOT become final at the same instant. At the
-      moment `status` first flips to DONE, the pass/fail evaluation may still be
-      in flight, and `testResult` reads NOT_APPLICABLE before resolving to
-      PASSED or FAILED.
+      `status` and the pass/fail verdict do NOT become final at the same instant.
+      At the moment `status` first flips to DONE the evaluation is still in
+      flight: `testResult` reads NOT_APPLICABLE, and - this is the part an
+      earlier version of this file got wrong - the entries in
+      passFailCriteria.passFailMetrics carry NO `result` property at all.
 
       That matters because NOT_APPLICABLE is overloaded. It legitimately means
       "this test defines no failureCriteria, so it can never fail" - the false
       green described in doc 07 §7.2. But it is ALSO what you see if you read
-      the field too early on a test that DOES have criteria and DID fail.
+      the verdict too early on a test that DOES have criteria and DID fail.
 
-      MEASURED, not assumed: on run verify-cutover-20260830-163946
-      (contoso-bank-url-smoke, 2 criteria) testResult was still NOT_APPLICABLE
-      more than 60 seconds after status reached DONE, and only later settled to
-      FAILED. A short retry loop is therefore NOT sufficient on its own.
+      CORRECTED, MEASURED 2026-09-15 against alt-loadtest-27d2e5, run
+      contoso-bank-peak-load-runall-20260915-102506, polled every 12 seconds:
 
-      The reliable signal is passFailCriteria.passFailMetrics[*].result on the
-      RUN. In that same run those per-criterion results were already correct and
-      complete at the first DONE response - avg(response_time_ms) 3978 > 500 was
-      already marked "failed" while the aggregate testResult still said
-      NOT_APPLICABLE. So we derive the verdict from the criteria and treat
-      testResult as advisory.
+        +0s   .. +85s   status=DONE testResult=NOT_APPLICABLE  6 criteria, none carrying a result
+        +97s            status=DONE testResult=FAILED          6 criteria, 5 marked failed
 
-      Precedence used below:
-        any criterion failed            -> FAILED
-        criteria exist, none failed     -> PASSED
-        no criteria at all              -> NOT_APPLICABLE (the real false green)
+      Both signals settled together, 97 seconds after DONE. The previous belief -
+      that the per-criterion results are already correct at the first DONE
+      response - is FALSE, and acting on it made this harness, the runner scripts
+      and the CI gate all report PASSED for runs that had actually breached their
+      criteria (url-smoke, secrets-kv, pr-gate and peak-load in that same batch).
 
-      We deliberately do NOT re-poll waiting for testResult to agree. Doing so
-      would cost up to a minute per scenario for a purely cosmetic field, and it
-      would erase the most instructive artefact this script produces: the moment
-      where the aggregate still says NOT_APPLICABLE while the criteria already
-      say FAILED. We report both and let the disagreement stand.
+      So we now WAIT for the verdict to settle, then take the pessimistic reading:
+
+        no criteria at all                       -> NOT_APPLICABLE (the real false green)
+        any criterion failed, or testResult FAILED -> FAILED
+        testResult PASSED and nothing failed     -> PASSED
+        still unresolved when we give up          -> UNSETTLED (never treated as a pass)
     #>
-    param([string]$RunId, [int]$TimeoutMinutes = 25)
+    param([string]$RunId, [int]$TimeoutMinutes = 25, [int]$SettleTimeoutSeconds = 300)
 
     $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
     $terminal = @('DONE', 'FAILED', 'CANCELLED')
@@ -550,21 +547,56 @@ function Wait-TestRun {
 
                     $props = @()
                     if ($criteria) { $props = @($criteria.PSObject.Properties) }
-                    $failedCount = @($props | Where-Object { $_.Value.result -eq 'failed' }).Count
+
+                    # Wait for the verdict to settle before judging it. Reading it
+                    # at first DONE reports a false green - see the block comment.
+                    $settled = ($props.Count -eq 0) -or ($status -ne 'DONE') -or ($result -in @('PASSED', 'FAILED'))
+                    $settleDeadline = (Get-Date).AddSeconds($SettleTimeoutSeconds)
+                    $announced = $false
+
+                    while (-not $settled -and (Get-Date) -lt $settleDeadline) {
+                        if (-not $announced) {
+                            Write-Host "      DONE - waiting for the verdict to settle..." -ForegroundColor DarkGray
+                            $announced = $true
+                        }
+                        Start-Sleep -Seconds 10
+                        $again = Invoke-Safe {
+                            az load test-run show --load-test-resource $script:LoadTestName `
+                                --resource-group $script:ResourceGroup --test-run-id $RunId `
+                                --query "{s:status,t:testResult,c:passFailCriteria.passFailMetrics}" -o json
+                        }
+                        if ($again.Ok -and $again.Output) {
+                            $j = $again.Output | ConvertFrom-Json
+                            $result = $j.t
+                            $props = @()
+                            if ($j.c) { $props = @($j.c.PSObject.Properties) }
+                            $settled = $result -in @('PASSED', 'FAILED')
+                        }
+                    }
+
+                    $failedCount = @($props | Where-Object { $_.Value.PSObject.Properties.Name -contains 'result' -and $_.Value.result -eq 'failed' }).Count
 
                     if ($props.Count -eq 0) {
                         $derived = 'NOT_APPLICABLE'
                     }
-                    elseif ($failedCount -gt 0) {
+                    elseif (-not $settled) {
+                        $derived = 'UNSETTLED'
+                    }
+                    elseif ($failedCount -gt 0 -or $result -eq 'FAILED') {
                         $derived = 'FAILED'
                     }
-                    else {
+                    elseif ($result -eq 'PASSED') {
                         $derived = 'PASSED'
                     }
+                    else {
+                        $derived = 'UNSETTLED'
+                    }
 
-                    if ($result -cne $derived) {
-                        Write-Host "      NOTE: testResult reports '$result' but $($props.Count) criterion/criteria already say '$derived' - trusting the criteria." -ForegroundColor Yellow
-                        Write-Host "            This is the settling lag described in doc 07 section 7.2. It is why the CI gate reads the criteria." -ForegroundColor DarkGray
+                    if ($derived -eq 'UNSETTLED') {
+                        Write-Host "      NOTE: the verdict never settled (testResult='$result'). Not treating this as a pass." -ForegroundColor Yellow
+                    }
+                    elseif ($result -eq 'FAILED' -and $failedCount -eq 0) {
+                        Write-Host "      NOTE: testResult says FAILED while the criteria still read 'passed' - trusting the failure." -ForegroundColor Yellow
                     }
 
                     foreach ($p in ($props | Where-Object { $_.Value.result -eq 'failed' })) {
