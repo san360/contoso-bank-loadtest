@@ -49,7 +49,9 @@ TARGET_FILES = [
     "loadtests/url-tests/contoso-bank-basic.json",
     "loadtests/url-tests/contoso-bank-smoke.json",
     "loadtests/url-tests/contoso-bank-curl.json",
+    "loadtests/url-tests/contoso-bank-correlated.json",
     "loadtests/url-tests/contoso-bank-false-green.json",
+    "loadtests/url-tests/contoso-bank-csv.json",
 ]
 
 HOSTNAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9-]+)+$", re.IGNORECASE)

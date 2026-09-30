@@ -124,6 +124,12 @@ jobs:
             contoso-bank-url-false-green)
               config='loadtests/config/url-false-green.yaml'
               ;;
+            contoso-bank-url-csv)
+              config='loadtests/config/url-csv.yaml'
+              ;;
+            contoso-bank-url-correlated)
+              config='loadtests/config/url-correlated.yaml'
+              ;;
             contoso-bank-secrets-kv)
               config='loadtests/config/secrets-demo.yaml'
               ;;

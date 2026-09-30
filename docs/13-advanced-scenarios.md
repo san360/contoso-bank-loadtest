@@ -93,6 +93,78 @@ Techniques:
 
 **Realistic data guidance for FSI:** use a representative distribution, not a uniform one. Real banking traffic is heavily skewed — a small number of accounts generate a large share of transactions, and balance enquiries vastly outnumber transfers. A uniform test overstates cache effectiveness and understates hot-partition risk.
 
+### 13.5.1 Input data files in a URL-based test — no script required
+
+**The scenario:** *"We like the no-code URL test, but it replays one hardcoded account. That's not a load test, it's a cache test."*
+
+The **Input data files** box on the portal's **Test plan** tab is the answer. It is the URL-test equivalent of a JMeter CSV Data Set Config, and it needs no script at all.
+
+Three pieces have to line up:
+
+| Piece | Portal | As code |
+|---|---|---|
+| The rows | **Choose files → Upload** | `configurationFiles:` in the test YAML |
+| The column names | **Variables** column | `csvDataSetConfigList` in the requests JSON |
+| The reference | `${ColumnName}` in a request | same |
+
+In the requests JSON, alongside `requests` inside the scenario:
+
+```json
+"csvDataSetConfigList": [
+  {
+    "fileName": "url-accounts.csv",
+    "variableNames": "accountId,payeeAccount,segment,pageSize"
+  }
+]
+```
+
+`fileName` must be the **bare file name**, never a path — the engines flatten every uploaded artefact into one folder. The YAML may use a relative path, because that is resolved at upload time:
+
+```yaml
+configurationFiles:
+  - ../data/url-accounts.csv
+```
+
+**The CSV must have no header row.** This is the mistake that costs an afternoon. Azure Load Testing does not preserve a header when it splits a file across engines, so the column names live in `variableNames` instead. Leave a header in and row one becomes data: `${accountId}` resolves to the literal string `accountId`, the API returns 404, and every run opens with a burst of errors.
+
+A variable works anywhere in the request — not just the URL:
+
+| Column | Used as | Example |
+|---|---|---|
+| `${accountId}` | URL path | `/api/accounts/${accountId}/balance` |
+| `${pageSize}` | query parameter | `?page_size=${pageSize}` |
+| `${segment}` | header | `X-Customer-Segment: ${segment}` |
+| `${payeeAccount}` | JSON body | `"to_account": "${payeeAccount}"` |
+
+**What the service generates.** You do not control the end-of-file behaviour from the requests JSON. Downloading the generated `url_test.jmx` from a real run of `contoso-bank-url-csv` shows what Azure actually builds:
+
+```
+ignoreFirstLine=false   recycle=true   stopThread=false   shareMode.all
+```
+
+So the file cycles back to the top indefinitely and all threads share one cursor — a 20-row file comfortably sustains a multi-minute run. Note `ignoreFirstLine=false`: that is the machine-readable proof of the no-header-row rule. If you need explicit control over recycling, use a JMX test.
+
+**Worked example in this kit:** `contoso-bank-url-csv` — see [doc 19 §19.2](19-recording-and-test-catalog.md). Verified on 2026-09-30, run `url-csv-20260930-101228`, 1 engine × 25 VUs × 3 min:
+
+| Check | Result |
+|---|---|
+| Samples | 1,318 |
+| Errors | 0 — response codes were only `200` and `201` |
+| Distinct `accountId` values in sampled URLs | **20 of 20**, 44–46 samples each |
+| Distinct `page_size` values | **11**, frequencies proportional to CSV row counts |
+
+Parsing the per-sample URLs out of the downloaded results archive is the only way to *prove* the binding worked, rather than assuming it. Zero errors alone is strong evidence — an unsubstituted `${accountId}` would 404 on every request — but the distinct-value count is conclusive.
+
+**Make it self-validating.** Give the test an error-percentage criterion. A missing CSV, a wrong `fileName`, or a stray header row all produce 404s, so the run fails loudly instead of quietly measuring the error path:
+
+```yaml
+failureCriteria:
+  clientMetrics:
+    - percentage(error) > 5
+```
+
+**Splitting across engines.** `splitAllCSVs: false` gives every engine the whole file — correct for a single-engine test. Set it to `true` on multi-engine tests so each engine gets its own slice instead of all of them replaying identical rows; `peak-load.yaml` does this across four engines.
+
 ---
 
 ## 13.6 Response variables — dynamic, dependent requests without a script
@@ -248,21 +320,46 @@ The root cause that time was upstream: `CreateTransfer` was returning `422 Insuf
 - Transfer **trivial amounts** (`amount_minor: 1`) in correlated tests so balances survive repeated runs.
 - Reset the demo data before a run that moves money: `pwsh -File tools/run_loadtest.ps1 -TestId contoso-bank-url-correlated -ResetData`.
 
-### 13.6.8 The portal editor hides some of these requests — the test is still fine
+### 13.6.8 The portal editor drops requests that omit `body` — and it is fixable
 
-Opening **Edit → Test plan** on this test in the portal lists only **two** of its three requests: `CreateTransfer` and `GetTransferByIdCurl`. `GetTransferById` — the URL-type request whose endpoint is `/api/transfers/${transferId}` — is silently absent.
+**Symptom.** Opening **Edit → Test plan** in the portal lists fewer requests than the JSON contains. The missing ones vanish silently, with no warning. In the worst case the list is empty and the tab shows *"Add at least one request to the test plan."* even though the test runs perfectly.
 
-Nothing is wrong with the test. Verified on 2026-09-15:
+**Root cause.** The portal editor drops any `requestType: URL` request that omits the `body` and `requestBodyFormat` keys. Azure stores the requests JSON **verbatim** — it does not normalise missing keys — so whatever you upload is exactly what the editor has to parse. The JMeter generator tolerates the omission, which is why these tests have always *run* correctly. Only the editor chokes.
 
-| Check | Result |
-|---|---|
-| Stored `URL_TEST_CONFIG` | 3 requests, `VALIDATION_SUCCESS` |
-| Generated `url_test.jmx` | 3 samplers, including `GetTransferById` |
-| Run `correlated-fixed-153140` | 3 labels executed, 1,520 × `200` on `GetTransferById` |
+**The fix** is two lines on every URL-type request that has no body — GET, HEAD, DELETE:
 
-The pattern, as far as it has been measured: the editor renders a plain URL request and a cURL request (whose command is an opaque string to it), but drops a **URL request with a variable in the endpoint**. It gives no warning that it has done so.
+```json
+{
+  "requestName": "GetBalance",
+  "requestType": "URL",
+  "method": "GET",
+  "endpoint": "https://.../api/accounts/${accountId}/balance",
+  "queryParameters": [],
+  "headers": { "Accept": "application/json" },
+  "body": null,
+  "requestBodyFormat": null,
+  "responseVariables": []
+}
+```
 
-So: **do not use the portal editor to review or edit a correlated test**, and never press **Apply** there — see [doc 04 §4.4](04-portal-feature-walkthrough.md). Review the JSON in source control instead, and prove behaviour by running the test and reading the per-request results.
+POST requests were never affected: they carry both keys naturally. That is exactly why, in a mixed test plan, the writes rendered and the reads disappeared.
+
+`requestType: CURL` requests are **not** affected and must **not** be given these keys — they carry `curlCommand` instead.
+
+**Evidence** (2026-09-30, test `contoso-bank-url-csv`, three requests):
+
+| Check | Before fix | After fix |
+|---|---|---|
+| Requests in portal editor | 1 of 3 — only `CreateTransfer` | 3 of 3 |
+| Stored `URL_TEST_CONFIG` | 3 requests, `VALIDATION_SUCCESS` | 3 requests, `VALIDATION_SUCCESS` |
+| Generated `url_test.jmx` | 3 samplers | 3 samplers |
+| Run `url-csv-20260930-101228` | 1,318 samples, 0 errors, all 3 labels | unchanged |
+
+> **Correction to an earlier claim in this kit.** This section previously diagnosed the cause as *"a URL request with a variable in the endpoint"*. That is wrong, and two observations disprove it. First, `contoso-bank-basic.json`'s `GetBalance` has a fully literal endpoint (`/api/accounts/ACC-1001/balance`) and was still dropped — its editor showed zero requests. Second, after adding `body: null`, requests whose endpoints *do* contain `${accountId}` render correctly. The variable was never the trigger; the missing keys were.
+>
+> The earlier advice that followed from it — *"do not use the portal editor to review or edit a correlated test"* — is therefore over-broad. Once the keys are present the editor renders the plan faithfully and is safe to read.
+
+**Still true, and worth keeping:** prefer the JSON in source control as the source of truth, and prove behaviour by running the test and reading per-request results rather than trusting the editor. Pressing **Apply** in the portal still rewrites the stored config from whatever the editor currently shows — so if you ever open a test whose JSON predates this fix, Apply will silently persist the truncated request list. See [doc 04 §4.4](04-portal-feature-walkthrough.md).
 
 ### 13.6.9 When to use it — and when to reach for JMeter instead
 

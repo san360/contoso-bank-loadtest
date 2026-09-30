@@ -32,6 +32,8 @@
           "headers": {
             "Accept": "application/json"
           },
+          "body": null,
+          "requestBodyFormat": null,
           "responseVariables": []
         },
         {

@@ -10,6 +10,8 @@
           "endpoint": "https://app-loadtest-27d2e5.azurewebsites.net/api/accounts/ACC-1001/balance",
           "queryParameters": [],
           "headers": {},
+          "body": null,
+          "requestBodyFormat": null,
           "responseVariables": []
         }
       ],

@@ -1,0 +1,72 @@
+{
+  "version": "1.0",
+  "scenarios": {
+    "requestGroup1": {
+      "requests": [
+        {
+          "requestName": "GetBalance",
+          "requestType": "URL",
+          "method": "GET",
+          "endpoint": "https://app-loadtest-27d2e5.azurewebsites.net/api/accounts/${accountId}/balance",
+          "queryParameters": [],
+          "headers": {
+            "Accept": "application/json",
+            "X-Customer-Segment": "${segment}"
+          },
+          "body": null,
+          "requestBodyFormat": null,
+          "responseVariables": []
+        },
+        {
+          "requestName": "GetTransactions",
+          "requestType": "URL",
+          "method": "GET",
+          "endpoint": "https://app-loadtest-27d2e5.azurewebsites.net/api/accounts/${accountId}/transactions",
+          "queryParameters": [
+            {
+              "key": "page_size",
+              "value": "${pageSize}"
+            }
+          ],
+          "headers": {
+            "Accept": "application/json",
+            "X-Customer-Segment": "${segment}"
+          },
+          "body": null,
+          "requestBodyFormat": null,
+          "responseVariables": []
+        },
+        {
+          "requestName": "CreateTransfer",
+          "requestType": "URL",
+          "method": "POST",
+          "endpoint": "https://app-loadtest-27d2e5.azurewebsites.net/api/transfers",
+          "queryParameters": [],
+          "headers": {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "X-Customer-Segment": "${segment}"
+          },
+          "body": "{\"from_account\":\"${accountId}\",\"to_account\":\"${payeeAccount}\",\"amount_minor\":1,\"currency\":\"GBP\",\"reference\":\"CSV-${accountId}\"}",
+          "requestBodyFormat": "JSON",
+          "responseVariables": []
+        }
+      ],
+      "csvDataSetConfigList": [
+        {
+          "fileName": "url-accounts.csv",
+          "variableNames": "accountId,payeeAccount,segment,pageSize"
+        }
+      ]
+    }
+  },
+  "testSetup": [
+    {
+      "scenario": "requestGroup1",
+      "loadType": "Linear",
+      "virtualUsersPerEngine": 25,
+      "rampUpTimeInSeconds": 30,
+      "durationInSeconds": 180
+    }
+  ]
+}

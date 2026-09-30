@@ -1,0 +1,112 @@
+# =============================================================================
+# Contoso Bank - URL CSV (input data files, no script)
+# =============================================================================
+# Answers the question the portal's "Input data files" box raises on the
+# Test plan tab: what is it actually for?
+#
+# It is parameterisation. Without it a URL-based test replays the SAME hardcoded
+# values on every iteration, so 25 virtual users hammer one account, warm one
+# cache entry and hit one database row. That measures your cache, not your API.
+# With a CSV, each iteration picks up the next row and the load spreads across
+# real data - which is what production traffic looks like.
+#
+# HOW THE PIECES FIT TOGETHER
+# ---------------------------
+#   1. ../data/url-accounts.csv     the rows, listed below in configurationFiles
+#   2. csvDataSetConfigList         in ../url-tests/contoso-bank-csv.json names
+#                                   the file and its columns
+#   3. ${columnName}                references a column inside a request
+#
+# The JSON block is the code equivalent of the portal's Variables column:
+#
+#   "csvDataSetConfigList": [
+#     { "fileName": "url-accounts.csv",
+#       "variableNames": "accountId,payeeAccount,segment,pageSize" }
+#   ]
+#
+# NO HEADER ROW - THIS IS THE USUAL MISTAKE
+# -----------------------------------------
+# The portal states it and the service enforces it: the CSV must NOT have a
+# header row, because Azure Load Testing does not preserve one when it splits
+# the file across engines. The column names live in `variableNames`, not in the
+# file. That is why this test uses ../data/url-accounts.csv rather than
+# ../data/accounts.csv - the latter keeps its header row for the JMeter plans,
+# whose CSV Data Set Config sets ignoreFirstLine=true.
+#
+# Leave a header row in and row one becomes data: ${accountId} resolves to the
+# literal string "accountId", the API returns 404, and you get a burst of errors
+# at the very start of every run.
+#
+# WHERE THE VARIABLES ARE USED - all four columns, four different places
+# ----------------------------------------------------------------------
+#   ${accountId}     URL path    /api/accounts/${accountId}/balance
+#   ${pageSize}      query param ?page_size=${pageSize}
+#   ${segment}       header      X-Customer-Segment: ${segment}
+#   ${payeeAccount}  JSON body   "to_account": "${payeeAccount}"
+#
+# ${pageSize} is the interesting one against this API: page size drives the N+1
+# query bottleneck in /api/accounts/{id}/transactions, so varying it per row
+# produces the uneven, realistic dependency-call volume a fixed value hides.
+#
+# THIS TEST IS SELF-VALIDATING
+# ----------------------------
+# If the CSV is missing, misnamed or has a stray header row, the substituted
+# account does not exist, the API returns 404, and `percentage(error) > 5`
+# fails the run. A green run means the data really was bound.
+#
+# SPLITTING ACROSS ENGINES
+# ------------------------
+# splitAllCSVs is false here because this is a single-engine demo: one engine
+# should see all 20 rows. Set it to true on a multi-engine test so each engine
+# gets its own slice instead of all of them replaying identical rows - see
+# peak-load.yaml, which does exactly that across 4 engines.
+#
+# NOTE ON END-OF-FILE BEHAVIOUR
+# -----------------------------
+# A URL-based test generates its JMeter CSV Data Set Config for you, so
+# recycle / stopThread are not yours to set from the requests JSON. Verified by
+# downloading the generated url_test.jmx from a real run of this test:
+#
+#   ignoreFirstLine=false   recycle=true   stopThread=false   shareMode.all
+#
+# So the file cycles back to the top forever and all threads share one cursor -
+# 20 rows are plenty for a 3 minute run. Note ignoreFirstLine=false: that is the
+# machine-readable proof of the no-header-row rule above. If you need explicit
+# control over any of this, use a JMX test - see loadtests/jmeter/contoso-bank.jmx.
+#
+#   1 engine x 25 VUs, 30s ramp, 3 min duration -> ~1.25 VUH.
+#
+# Note the load profile (virtual users, ramp, duration) lives in the requests
+# JSON `testSetup` block, NOT here - that is specific to URL-based tests.
+#
+# Run it:
+#   pwsh -File tools/run_loadtest.ps1 -TestId contoso-bank-url-csv
+# =============================================================================
+
+version: v0.1
+
+testId: contoso-bank-url-csv
+displayName: Contoso Bank - URL CSV Input Data
+description: Drives a no-code URL test from a CSV input data file so each iteration uses a different account.
+
+testType: URL
+testPlan: ../url-tests/contoso-bank-csv.json
+
+engineInstances: 1
+
+# The CSV has to be uploaded alongside the test plan. A relative path is fine
+# here, but inside the request JSON only the bare file name works - the engines
+# flatten every uploaded artefact into one folder.
+configurationFiles:
+  - ../data/url-accounts.csv
+
+splitAllCSVs: false
+
+failureCriteria:
+  clientMetrics:
+    - percentage(error) > 5
+    - avg(response_time_ms) > 2000
+
+autoStop:
+  errorPercentage: 90
+  timeWindow: 60

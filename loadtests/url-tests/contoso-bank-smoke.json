@@ -12,6 +12,8 @@
           "headers": {
             "Accept": "application/json"
           },
+          "body": null,
+          "requestBodyFormat": null,
           "responseVariables": []
         },
         {
@@ -23,6 +25,8 @@
           "headers": {
             "Accept": "application/json"
           },
+          "body": null,
+          "requestBodyFormat": null,
           "responseVariables": []
         },
         {
@@ -39,6 +43,8 @@
           "headers": {
             "Accept": "application/json"
           },
+          "body": null,
+          "requestBodyFormat": null,
           "responseVariables": []
         },
         {
@@ -64,6 +70,8 @@
           "headers": {
             "Accept": "application/json"
           },
+          "body": null,
+          "requestBodyFormat": null,
           "responseVariables": []
         }
       ],
