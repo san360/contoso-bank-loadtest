@@ -10,12 +10,14 @@ It contains a documented session agenda, a purpose-built banking API with delibe
 
 | Folder | Contents |
 |---|---|
-| [`docs/`](./docs) | The session agenda and presenter runbook — 26 numbered documents (00–25) |
+| [`docs/`](./docs) | The session agenda and presenter runbook — 27 numbered documents (00–26) |
 | [`src/`](./src) | **Contoso Bank API** — the system under test |
 | [`loadtests/`](./loadtests) | JMeter, Locust, URL-based and cURL-based tests, plus YAML configs and test data. [`config-private/`](./loadtests/config-private) holds the VNet-injected definition, kept out of the auto-provisioned set because it needs an environment-specific subnet ID |
 | [`infra/`](./infra) | Terraform IaC used by `azd up` |
 | [`.github/workflows/`](./.github/workflows) | GitHub Actions performance gate (OIDC, no stored secrets) |
 | [`tools/`](./tools) | `azd up` load-test provisioning hooks, [`run_loadtest.ps1`/`.sh`](./tools) one-command test runners, [`provision_private_loadtest.ps1`](./tools/provision_private_loadtest.ps1) VNet-injected test with subnet pre-flight, [`compare_runs.ps1`](./tools/compare_runs.ps1) before/after run comparison, [`e2e-test.ps1`](./tools/e2e-test.ps1) end-to-end validation, hostname retargeting, VUH costing, and the harness that proves the planted bottlenecks actually bite |
+| [`tools/cli_demo/`](./tools/cli_demo) | Local **Azure CLI lab**: preview/execute create/run/inspect commands, client/engine/server metrics, downloadable logs/results/metric evidence and step scripts. No additional Python packages |
+| [`.github/skills/`](./.github/skills) | Reusable **JMX-to-Locust migration** and **downloaded artifact analysis** agent skills, with standard-library helpers |
 
 ---
 
@@ -56,6 +58,44 @@ tools/run_loadtest.sh --all
 ```
 
 The runner resolves the Azure Load Testing resource from the azd environment, polls until the run finishes, **waits for the pass/fail verdict to settle** (measured at ~97 seconds after `DONE` — reading it earlier reports a false green, see [doc 07 §7.2.4](./docs/07-analyzing-results-and-bottlenecks.md)), prints the breached criteria and the headline percentiles, and exits non-zero on anything short of proof of a pass. Add `-DownloadResults` / `--download` for the CSV/JTL and the JMeter HTML report, `-Preset` / `--preset` to flip the app between `bottlenecked` and `optimized` before the run, `-All` / `--all` to run every deployed definition sequentially, or `-NoWait` / `--no-wait` to fire and forget. Compare any two runs afterwards with [`tools/compare_runs.ps1`](./tools/compare_runs.ps1). The raw `az load test-run create` path still works and is documented in [doc 17](./docs/17-portal-free-operations-and-observability.md).
+
+---
+
+## Interactive CLI demo
+
+Requires **Python 3.11+**, **Azure CLI 2.66+**, and an existing Azure Load Testing
+resource. No `azd up`, `pip install`, npm install, or frontend build is needed.
+
+```powershell
+# Run from the repository root.
+az login --tenant "<tenant-guid-or-domain>"
+az account set --subscription "<subscription-guid>"
+az extension add --name load
+python -m tools.cli_demo
+```
+
+Open **http://127.0.0.1:8765** and enter the tenant, subscription ID, resource group,
+Load Testing resource name, and authorized target URL. Preview each command,
+then execute **Create the small demo test**, **Start a load test run**, **Watch
+selected run**, and **Collect analysis bundle**. Starting a run requires explicit
+confirmation.
+
+`az account set` changes the current CLI profile. For a dedicated demo profile,
+follow the `AZURE_CONFIG_DIR` setup in [doc 26](./docs/26-cli-demo-app-and-skills.md#different-tenants-and-cli-subscription-context).
+If port 8765 is occupied, use `python -m tools.cli_demo --port 8766`.
+
+Press **Ctrl+C** in the server terminal to stop the local UI; this does **not**
+cancel Azure runs. Restart with the same `python -m tools.cli_demo` command.
+Browser settings and downloaded evidence in `.loadtest-demo/` remain local.
+
+The opt-in
+[`loadtests/cli-demo/`](./loadtests/cli-demo) test uses one engine, five users and a
+60-second GET health check; starting a run still incurs Azure charges. The app is
+localhost-only and separate from the deployed API.
+
+See [doc 26](./docs/26-cli-demo-app-and-skills.md) for startup/RBAC, a presenter
+flow, what **app components** mean, the distinction between client and server
+metric commands, artifact downloads and both agent skills.
 
 ---
 
@@ -133,6 +173,7 @@ Start with [`docs/00-agenda-and-runbook.md`](./docs/00-agenda-and-runbook.md).
 | 23 | [VNet-injected test case — private network plan](./docs/23-vnet-injected-test-case.md) |
 | 24 | [Secrets from Key Vault — audit and hardening plan](./docs/24-secrets-from-key-vault.md) |
 | 25 | [Simulating JWT user identity](./docs/25-simulating-jwt-user-identity.md) |
+| 26 | [**Interactive Azure CLI demo, app components, downloads and agent skills**](./docs/26-cli-demo-app-and-skills.md) |
 
 Sections 02, 07, 11, 12, 13, 14, 17, 18 and 19 were added to the original agenda — see doc 00 for the rationale.
 

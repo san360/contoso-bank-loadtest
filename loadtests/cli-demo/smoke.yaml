@@ -1,0 +1,23 @@
+version: v0.1
+testId: cli-demo-smoke
+displayName: Azure CLI demo - small health check
+description: One engine, five users, 60 seconds, one authorized GET endpoint.
+testType: JMX
+testPlan: smoke.jmx
+engineInstances: 1
+env:
+  - name: DEMO_HOST
+    value: example.invalid
+  - name: DEMO_PROTOCOL
+    value: https
+  - name: DEMO_PORT
+    value: "443"
+  - name: DEMO_PATH
+    value: /health
+failureCriteria:
+  clientMetrics:
+    - percentage(error) > 1
+    - avg(response_time_ms) > 1000
+autoStop:
+  errorPercentage: 90
+  timeWindow: 60
