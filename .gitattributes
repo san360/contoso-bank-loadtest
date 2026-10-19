@@ -1,0 +1,4 @@
+*.sh text eol=lf
+*.rb text eol=lf
+Dockerfile text eol=lf
+.gitlab-ci.yml text eol=lf

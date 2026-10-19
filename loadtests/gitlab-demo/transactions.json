@@ -1,0 +1,30 @@
+{
+  "version": "1.0",
+  "scenarios": {
+    "transactions": {
+      "requests": [
+        {
+          "requestName": "GetTransactions",
+          "requestType": "URL",
+          "method": "GET",
+          "endpoint": "https://TARGET_HOST/api/accounts/ACC-1001/transactions",
+          "queryParameters": [{"key": "page_size", "value": "40"}],
+          "headers": {"Accept": "application/json"},
+          "body": null,
+          "requestBodyFormat": null,
+          "responseVariables": []
+        }
+      ],
+      "csvDataSetConfigList": []
+    }
+  },
+  "testSetup": [
+    {
+      "scenario": "transactions",
+      "loadType": "Linear",
+      "virtualUsersPerEngine": 12,
+      "rampUpTimeInSeconds": 10,
+      "durationInSeconds": 90
+    }
+  ]
+}

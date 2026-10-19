@@ -1,0 +1,10 @@
+subscription_id = "00000000-0000-0000-0000-000000000000"
+tenant_id       = "00000000-0000-0000-0000-000000000000"
+location        = "swedencentral"
+owner           = "presenter"
+
+# Supply these using a private, owner-only file OUTSIDE the repository.
+# Generate distinct cryptographically random values; do not use these placeholders.
+gitlab_root_password   = "REPLACE"
+gitlab_bootstrap_token = "REPLACE"
+app_admin_token        = "REPLACE"
