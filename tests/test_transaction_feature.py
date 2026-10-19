@@ -1,5 +1,6 @@
 import asyncio
 import importlib.util
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -87,6 +88,23 @@ class TransactionFeatureTests(unittest.TestCase):
 
     def test_local_version_is_explicit_not_a_claimed_commit(self):
         self.assertEqual(main.BUILD_INFO["source_sha"], "local")
+
+    def test_opt_in_request_logs_correlate_source_without_auth_headers(self):
+        with patch.object(main, "REQUEST_LOGGING", True), self.assertLogs(
+            "contoso.requests", level="INFO"
+        ) as logs:
+            with TestClient(main.app) as client:
+                response = client.get("/health", headers={
+                    "X-Correlation-Id": "test-correlation",
+                    "X-Demo-Admin-Token": "must-not-be-logged",
+                    "Authorization": "must-not-be-logged",
+                })
+        record = json.loads(logs.records[-1].getMessage())
+        self.assertEqual(record["source_sha"], "local")
+        self.assertEqual(record["correlation_id"], response.headers["X-Correlation-Id"])
+        self.assertEqual(record["status"], 200)
+        self.assertGreaterEqual(record["duration_ms"], 0)
+        self.assertNotIn("must-not-be-logged", logs.records[-1].getMessage())
 
 
 if __name__ == "__main__":

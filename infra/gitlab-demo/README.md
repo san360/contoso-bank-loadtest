@@ -44,7 +44,8 @@ carry credentials.
 | Runner tools | Runner 19.4.0, Python 3.12.12, Azure CLI 2.89.0, load extension 2.1.0 |
 | System under test | New Linux S1 App Service and `staging` slot; ZIP/Oryx deployment, one worker |
 | Load generator | New Azure Load Testing resource; one URL-test engine, read-only transactions |
-| Azure credentials | Runner user-assigned managed identity; Website Contributor on this app, Load Test Contributor on this ALT resource, AcrPull on this registry |
+| Azure credentials | Runner user-assigned managed identity; Website Contributor on this app, Load Test Contributor on ALT, AcrPull on ACR, Monitoring Reader on staging/plan and Log Analytics Reader on this workspace |
+| ALT metrics identity | ALT's own system-assigned identity, Monitoring Reader scoped to the actual staging slot and shared S1 plan |
 
 No privileged containers, Docker socket, DinD, GitLab SAML/OIDC integration, or
 long-lived Azure client secret is used. GitLab UI credentials are not Azure ARM
@@ -325,17 +326,69 @@ app/diagnostic job IDs reported by Terraform; they are read-only inventory, so
 Terraform does not delete them. Resource-group deletion intentionally refuses
 unmanaged leftovers rather than silently deleting them.
 
-## Reading results without the portal
+## Reading results, server metrics and logs
 
-The proof is available through `az load test-run show`, `metrics list`, and
-`download-files`, as well as GitLab job artifacts. ALT client p95/RPS/errors and
-worker logs are **ALT data-plane results**, not native Log Analytics tables.
-ALT `OperationLogs` diagnostics are API audit events, not client performance
-series. Real SUT requests/dependencies/traces can be wired through workspace-based
-Application Insights separately; this minimal stack does not add that integration.
+The client proof is available through `az load test-run show`, `metrics list`,
+`download-files`, and GitLab job artifacts. ALT client p95/RPS/errors and worker
+logs are **ALT data-plane results**, not native Log Analytics tables. ALT
+`OperationLogs` diagnostics are API audit events, not client performance series.
+
+The test now attaches the **actual staging slot**, not the production parent,
+and the shared S1 plan. The service accepted the `Microsoft.Web/sites/slots`
+component and seven metric definitions in the live configuration trial.
+Slot metrics are Requests/HTTP 5xx totals, average HTTP response time (seconds)
+and average memory working set (bytes). Plan CPU/memory percentages and HTTP
+queue length are explicitly **shared with production**, not candidate-isolated.
+These are diagnostic definitions, not additional gate thresholds.
+
+Each locked gate configures and reads back the components/definitions before
+starting the run. Artifacts include `app-components.json`,
+`server-metric-definitions.json`, their per-run counterparts,
+`client-metric-series.json`, `server-metrics-staging.json`,
+`server-metrics-shared_plan.json`, `staging-console-logs.json` and
+`monitoring-summary.json`. Server samples are queried from Azure Monitor for the
+real run's time window and bordering one-minute buckets. A definition does not
+prove any time-series samples exist; zero is a real sample, null/empty is not.
+Pending ingestion and unavailable/forbidden telemetry are reported explicitly.
+The p95/error verdict remains independent from telemetry ingestion.
+
+The optional stack enables request JSON logging with source SHA, producing
+pipeline ID, correlation ID, method/path/status and elapsed time; it never logs
+authentication headers or request bodies. `LOG_REQUESTS` stays **off by default**
+for the original API/demo. Staging and production console/HTTP diagnostics route
+to the **existing** workspace's `AppServiceConsoleLogs`/`AppServiceHTTPLogs`
+tables. No Application Insights, Grafana, LGTM or new workspace is added.
+Log ingestion is asynchronous and tables may not exist until the first records.
+
+### Shared-profile CLI limitation
+
+With CLI 2.89/load 2.1, the native load data-client factory resolves credentials
+from the profile's default subscription even when `--subscription` is supplied.
+Another process changing a shared default can therefore cause a misleading
+`ResourceGroupNotFound` or a null endpoint for an existing resource. Do not edit
+installed CLI files, copy caches, switch the shared default, or put bearer tokens
+in `az rest --headers` process arguments.
+
+The external controller and this read-only helper discover the endpoint through
+explicit-subscription ARM, acquire an explicit-subscription/audience token, and
+keep its Authorization header only in process memory:
+
+```powershell
+python -m tools.gitlab_demo.azure_http run --private-dir $private --run-id '<run-id>'
+python -m tools.gitlab_demo.azure_http components --private-dir $private
+python -m tools.gitlab_demo.azure_http metric-definitions --private-dir $private
+```
+
+The runner has its own per-job `AZURE_CONFIG_DIR`, one managed-identity
+subscription, and records/validates the selected subscription/directory before
+using native `az load`. Tokens and SAS-bearing artifact URLs are excluded from
+the saved read-only snapshots. After changing Terraform resource outputs for an
+existing lab, `python -m tools.gitlab_demo.bootstrap configure --private-dir
+$private` refreshes protected CI variables without creating tokens/projects.
+
 Grafana's Azure Monitor data source is optional for KQL/server telemetry, and
-does not automatically expose ALT run results. See the repository's observability
-documentation for the separately researched exporter/Log Analytics paths.
+does not automatically expose ALT run results. See the separately researched
+observability documentation for exporter and alternative Log Analytics paths.
 
 ## Cost exposure, stopping and cleanup
 

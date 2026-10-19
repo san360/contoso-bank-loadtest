@@ -23,6 +23,7 @@ from .common import (
     DEMO_BRANCH, TEST_ID, DemoError, GitLab, ROOT, azure, contract_digest,
     http_json, https_origin, read_json, required, run, sha, write_json,
 )
+from . import monitoring
 
 EVIDENCE = ROOT / "demo-evidence"
 DIST = ROOT / "dist"
@@ -135,11 +136,16 @@ def functional_digest(payload: dict) -> str:
 class Context:
     def __init__(self):
         self.subscription = required("AZURE_SUBSCRIPTION_ID")
+        self.tenant = required("AZURE_TENANT_ID")
         self.group = required("AZURE_RESOURCE_GROUP")
         self.app = required("APP_NAME")
         self.staging = https_origin(required("STAGING_URL"))
         self.production = https_origin(required("PRODUCTION_URL"))
         self.load = required("LOAD_TEST_NAME")
+        self.load_id = required("LOAD_TEST_RESOURCE_ID")
+        self.staging_id = required("STAGING_RESOURCE_ID")
+        self.plan_id = required("APP_SERVICE_PLAN_ID")
+        self.workspace = required("LOG_WORKSPACE_ID")
         self.source_sha = sha(required("CI_COMMIT_SHA"))
         self.pipeline_id = required("CI_PIPELINE_ID")
         self.job_id = required("CI_JOB_ID")
@@ -161,6 +167,13 @@ class Context:
             "az", "login", "--identity", "--client-id", required("AZURE_CLIENT_ID"),
             "--allow-no-subscriptions", "--only-show-errors", "-o", "none",
         ], timeout=120)
+        account = json.loads(run(["az", "account", "show", "--only-show-errors", "-o", "json"]))
+        if account["id"] != self.subscription or account["tenantId"] != self.tenant:
+            raise DemoError("Runner's isolated CLI login did not select the expected managed-identity subscription")
+        write_json(EVIDENCE / "azure-auth.json", {
+            "subscription_id": account["id"], "tenant_id": account["tenantId"],
+            "managed_identity_client_id": required("AZURE_CLIENT_ID"),
+        })
 
 
 def check_mr(context: Context) -> dict:
@@ -236,6 +249,7 @@ def gate(context: Context) -> int:
     write_json(EVIDENCE / "summary.json", summary)
     run_id = f"gl-{context.pipeline_id}-{context.job_id}-{context.source_sha[:8]}"
     run_started = False
+    final_payload = None
     try:
         manifest = verify_candidate(context.source_sha, context.pipeline_id)
         if manifest["feature"] != "merchant-category-v1":
@@ -271,6 +285,7 @@ def gate(context: Context) -> int:
             "test", "create", "--test-id", TEST_ID, "--load-test-config-file",
             str(EVIDENCE / "input" / "transactions.yaml"), "-o", "none",
         ], timeout=300)
+        monitoring.configure(context, EVIDENCE)
         context.load_cli([
             "test-run", "create", "--test-id", TEST_ID, "--test-run-id", run_id, "--no-wait",
             "--description", f"GitLab pipeline {context.pipeline_id}; source {context.source_sha}",
@@ -280,6 +295,7 @@ def gate(context: Context) -> int:
         summary["alt_run_id"] = run_id
         write_json(EVIDENCE / "summary.json", summary)
         payload, verdict = wait_load_run(context, run_id)
+        final_payload = payload
         if verdict.outcome in {"passed", "performance_failed"}:
             check_demo_contract(verdict)
         summary.update(verdict.as_dict())
@@ -302,6 +318,12 @@ def gate(context: Context) -> int:
                 ], timeout=300)
             except (DemoError, subprocess.TimeoutExpired) as error:
                 summary.update(outcome="infrastructure_failed", reason=f"Evidence download failed: {error}")
+            if final_payload is not None:
+                try:
+                    summary["monitoring"] = monitoring.collect(context, final_payload, EVIDENCE)
+                except (DemoError, ValueError, OSError, subprocess.TimeoutExpired) as error:
+                    summary["monitoring"] = {"status": "error", "reason": str(error)}
+                    print(f"Monitoring evidence unavailable (client verdict unchanged): {error}", file=sys.stderr)
         summary["finished_at"] = now()
         write_json(EVIDENCE / "summary.json", summary)
     print(json.dumps(summary, indent=2))

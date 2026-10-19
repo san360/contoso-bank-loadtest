@@ -24,6 +24,7 @@ locals {
     FRAUD_CHECK_PARALLEL                = "true"
     STATEMENT_CPU_ROUNDS                = "1500"
     ERROR_RATE_PERCENT                  = "0"
+    LOG_REQUESTS                        = "true"
     DEMO_ADMIN_TOKEN                    = var.app_admin_token
   }
 }
@@ -251,6 +252,17 @@ resource "azurerm_linux_web_app" "demo" {
     }
   }
 
+  logs {
+    application_logs {
+      file_system_level = "Information"
+    }
+    http_logs {
+      file_system {
+        retention_in_days = 3
+        retention_in_mb   = 35
+      }
+    }
+  }
   app_settings = local.app_settings
   tags         = local.tags
 }
@@ -272,6 +284,17 @@ resource "azurerm_linux_web_app_slot" "staging" {
     }
   }
 
+  logs {
+    application_logs {
+      file_system_level = "Information"
+    }
+    http_logs {
+      file_system {
+        retention_in_days = 3
+        retention_in_mb   = 35
+      }
+    }
+  }
   app_settings = local.app_settings
   tags         = local.tags
 }
@@ -281,7 +304,10 @@ resource "azurerm_load_test" "demo" {
   location            = var.location
   resource_group_name = azurerm_resource_group.demo.name
   description         = "Isolated GitLab transaction enrichment regression gate"
-  tags                = local.tags
+  identity {
+    type = "SystemAssigned"
+  }
+  tags = local.tags
 }
 
 resource "azurerm_role_assignment" "runner_deploy" {

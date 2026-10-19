@@ -14,10 +14,16 @@ output "demo" {
     retained_diagnostic_jobs = var.use_clean_environment ? [for job in data.azurerm_resources.diagnostic_job[0].resources : job.id] : []
     storage_account          = azurerm_storage_account.gitlab.name
     app_name                 = azurerm_linux_web_app.demo.name
+    app_id                   = azurerm_linux_web_app.demo.id
+    staging_id               = azurerm_linux_web_app_slot.staging.id
+    plan_id                  = azurerm_service_plan.demo.id
+    workspace_id             = azurerm_log_analytics_workspace.demo.id
+    workspace_customer_id    = azurerm_log_analytics_workspace.demo.workspace_id
     staging_url              = "https://${azurerm_linux_web_app_slot.staging.default_hostname}"
     production_url           = "https://${azurerm_linux_web_app.demo.default_hostname}"
     load_test_name           = azurerm_load_test.demo.name
     load_test_id             = azurerm_load_test.demo.id
+    load_test_endpoint       = azurerm_load_test.demo.data_plane_uri
     runner_client_id         = azurerm_user_assigned_identity.runner.client_id
     portal_url               = "https://portal.azure.com/#resource${azurerm_resource_group.demo.id}"
   }

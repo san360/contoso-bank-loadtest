@@ -72,6 +72,39 @@ def put_variable(client: GitLab, key: str, value: str, *, secret=False) -> None:
         client.request("PUT", f"{client.project}/variables/{key}", body)
 
 
+def configure_variables(bot: GitLab, resources: dict, credentials: dict) -> None:
+    mapping = {
+        "AZURE_SUBSCRIPTION_ID": "subscription_id",
+        "AZURE_TENANT_ID": "tenant_id",
+        "AZURE_RESOURCE_GROUP": "resource_group",
+        "APP_NAME": "app_name",
+        "STAGING_URL": "staging_url",
+        "PRODUCTION_URL": "production_url",
+        "LOAD_TEST_NAME": "load_test_name",
+        "LOAD_TEST_RESOURCE_ID": "load_test_id",
+        "STAGING_RESOURCE_ID": "staging_id",
+        "APP_SERVICE_PLAN_ID": "plan_id",
+        "LOG_WORKSPACE_ID": "workspace_customer_id",
+        "AZURE_CLIENT_ID": "runner_client_id",
+    }
+    for name, source in mapping.items():
+        put_variable(bot, name, resources[source])
+    put_variable(bot, "DEMO_ADMIN_TOKEN", credentials["app_admin_token"], secret=True)
+    put_variable(bot, "GITLAB_BOT_TOKEN", credentials["project_token"], secret=True)
+
+
+def configure(args) -> None:
+    folder = private_directory(args.private_dir)
+    config = read_json(folder / "gitlab.json")
+    credentials = read_json(folder / "secrets.json")
+    resources = read_json(folder / "resources.json")
+    bot = GitLab(resources["gitlab_url"], credentials["project_token"], config["project_id"])
+    configure_variables(bot, resources, credentials)
+    config.update(resources)
+    write_json(folder / "gitlab.json", config)
+    print(f"Updated protected resource variables for {config['project_url']}; no new tokens or projects.")
+
+
 def seed(args) -> None:
     folder = private_directory(args.private_dir)
     credentials = read_json(folder / "secrets.json")
@@ -169,19 +202,7 @@ def seed(args) -> None:
         "runner_token": credentials["runner_token"], "deploy_gitlab": True, "deploy_runner": True,
     })
     write_json(folder / "demo.tfvars.json", variables)
-    mapping = {
-        "AZURE_SUBSCRIPTION_ID": "subscription_id",
-        "AZURE_RESOURCE_GROUP": "resource_group",
-        "APP_NAME": "app_name",
-        "STAGING_URL": "staging_url",
-        "PRODUCTION_URL": "production_url",
-        "LOAD_TEST_NAME": "load_test_name",
-        "AZURE_CLIENT_ID": "runner_client_id",
-    }
-    for name, source in mapping.items():
-        put_variable(bot, name, resources[source])
-    put_variable(bot, "DEMO_ADMIN_TOKEN", credentials["app_admin_token"], secret=True)
-    put_variable(bot, "GITLAB_BOT_TOKEN", credentials["project_token"], secret=True)
+    configure_variables(bot, resources, credentials)
     lint = bot.request("POST", f"{bot.project}/ci/lint", {
         "content": (ROOT / ".gitlab-ci.yml").read_text(), "dry_run": False,
     })
@@ -216,9 +237,11 @@ def main() -> int:
     init.add_argument("--location", default="swedencentral")
     seed_parser = sub.add_parser("seed")
     seed_parser.add_argument("--private-dir", required=True, type=Path)
+    configure_parser = sub.add_parser("configure")
+    configure_parser.add_argument("--private-dir", required=True, type=Path)
     args = parser.parse_args()
     try:
-        {"init": initialize, "seed": seed}[args.operation](args)
+        {"init": initialize, "seed": seed, "configure": configure}[args.operation](args)
         return 0
     except (DemoError, OSError, ValueError, subprocess.TimeoutExpired) as error:
         print(str(error), file=sys.stderr)

@@ -21,9 +21,11 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import os
 import random
 import re
+import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -456,6 +458,14 @@ if BUILD_INFO["source_sha"] != "local" and not re.fullmatch(
 ):
     raise RuntimeError("build-info.json does not contain a full source commit SHA")
 DEMO_ADMIN_TOKEN = os.getenv("DEMO_ADMIN_TOKEN", "")
+REQUEST_LOGGING = _env_bool("LOG_REQUESTS", False)
+REQUEST_LOGGER = logging.getLogger("contoso.requests")
+if REQUEST_LOGGING:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    REQUEST_LOGGER.addHandler(handler)
+    REQUEST_LOGGER.setLevel(logging.INFO)
+    REQUEST_LOGGER.propagate = False
 
 STARTED_AT = time.time()
 REQUEST_COUNT = 0
@@ -475,6 +485,17 @@ async def correlation_and_timing(request: Request, call_next):
     elapsed_ms = (time.perf_counter() - started) * 1000
     response.headers["X-Correlation-Id"] = correlation_id
     response.headers["X-Server-Time-Ms"] = f"{elapsed_ms:.1f}"
+    if REQUEST_LOGGING:
+        REQUEST_LOGGER.info(json.dumps({
+            "event": "http_request",
+            "source_sha": BUILD_INFO["source_sha"],
+            "pipeline_id": str(BUILD_INFO["pipeline_id"]),
+            "correlation_id": correlation_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status": response.status_code,
+            "duration_ms": round(elapsed_ms, 2),
+        }, separators=(",", ":")))
     return response
 
 

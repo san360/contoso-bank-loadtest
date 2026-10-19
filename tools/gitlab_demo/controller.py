@@ -20,6 +20,7 @@ from .common import (
     contract_digest, http_json, read_json, sha, write_json,
 )
 from .pipeline import feature_name, now
+from .azure_http import ScopedLoadTest
 
 TRAILER = "\n\nCo-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>"
 
@@ -140,11 +141,9 @@ def gate_evidence(client: GitLab, pipeline: dict, *, expect_red: bool) -> tuple[
 
 
 def verify_measurement(config: dict, proof: dict, *, expect_red: bool) -> dict:
-    payload = json.loads(azure([
-        "load", "test-run", "show", "--test-run-id", proof["alt_run_id"],
-        "--load-test-resource", config["load_test_name"],
-        "--resource-group", config["resource_group"], "-o", "json",
-    ], config["subscription_id"]))
+    payload = ScopedLoadTest(
+        config["subscription_id"], config["tenant_id"], config["load_test_id"],
+    ).get_run(proof["alt_run_id"])
     verdict = evaluate(payload)
     check_demo_contract(verdict)
     if expect_red:
