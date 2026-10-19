@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 import zipfile
@@ -8,7 +9,7 @@ from unittest.mock import patch
 
 from tools.gitlab_demo.common import DemoError, contract_digest, https_origin, write_json
 from tools.gitlab_demo.controller import gate_evidence
-from tools.gitlab_demo.pipeline import feature_name, functional_digest, render_test, verify_candidate
+from tools.gitlab_demo.pipeline import check_mr, feature_name, functional_digest, render_test, verify_candidate
 
 
 class GitLabPipelineTests(unittest.TestCase):
@@ -86,6 +87,38 @@ class GitLabPipelineTests(unittest.TestCase):
                          "merchant-category-v1")
         with self.assertRaises(DemoError):
             feature_name('FEATURE = str(42)')
+
+    def test_mr_cache_lag_is_bounded_but_a_new_source_fails_closed(self):
+        source = "a" * 40
+
+        class Client:
+            project_id = "3"
+            reads = 0
+            branch_sha = source
+
+            def get(self, suffix):
+                if suffix.startswith("/repository/branches/"):
+                    return {"commit": {"id": self.branch_sha}}
+                if suffix.startswith("/merge_requests?"):
+                    return [{"iid": 7}]
+                self.reads += 1
+                return {
+                    "state": "opened", "source_branch": "demo/merchant-enrichment",
+                    "target_branch": "main", "source_project_id": 3, "target_project_id": 3,
+                    "sha": "b" * 40 if self.reads == 1 else source,
+                }
+
+        class Context:
+            source_sha = source
+            client = Client()
+
+        with patch.dict(os.environ, {"CI_MERGE_REQUEST_IID": "7"}), patch(
+            "tools.gitlab_demo.pipeline.time.sleep"
+        ):
+            self.assertEqual(check_mr(Context())["sha"], source)
+            Context.client.branch_sha = "c" * 40
+            with self.assertRaises(DemoError):
+                check_mr(Context())
 
 
 if __name__ == "__main__":

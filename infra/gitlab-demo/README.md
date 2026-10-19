@@ -36,7 +36,7 @@ carry credentials.
 | Resource | Configuration |
 |---|---|
 | Resource group | New `rg-contoso-gitlab-demo`; exact tag `SecurityControl=Ignore`, plus owner/project/purpose |
-| GitLab CE | Pinned 19.4.2 image, ACA Consumption, 4 vCPU/8 GiB, one replica, Single revision mode |
+| GitLab CE | Pinned 19.4.2 image, ACA Consumption, 3.75 vCPU/7.5 GiB main plus 0.25 vCPU/0.5 GiB init (4/8 total), one replica, Single revision mode |
 | Persistent storage | Classic Premium LRS Azure Files NFS share, 100 GiB; separate config/data/log directories |
 | Network | Dedicated VNet/subnet; storage firewall allows that subnet; no public SSH |
 | Public GitLab | ACA's DNS name and TLS termination; HTTP redirect, local password/PAT authentication, signups disabled before readiness |
@@ -64,6 +64,14 @@ Single revision mode and min/max one replica reduce, but do not eliminate,
 overlap/multiwriter risks. **Stop GitLab before an image/revision update**, preserve
 the share, and then start the new revision. Do not use rolling GitLab upgrades
 or scale this proof of concept out.
+
+For maintenance, switch the app to Multiple mode, explicitly deactivate its
+current revision, and verify there are no active replicas before applying the
+new image with Terraform (which restores Single mode). The CLI does not have
+an `az containerapp stop` command. Use `az containerapp revision set-mode --mode
+multiple` followed by `az containerapp revision deactivate --revision <exact-name>`,
+with the selected app/resource group/subscription on both commands. Do not
+deactivate unrelated apps or discard their revisions.
 
 ## Presenter prerequisites
 
@@ -132,17 +140,21 @@ remote builds require no local Docker daemon. Build contexts contain no secrets:
 ```powershell
 $resources = Get-Content "$private\resources.json" -Raw | ConvertFrom-Json
 Push-Location infra\gitlab-demo\images\gitlab
-az acr build --registry $resources.registry --image gitlab:19.4.2-demo-v1 `
+az acr build --registry $resources.registry --image gitlab:19.4.2-demo-v2 `
   --platform linux/amd64 --file Dockerfile --subscription $subscription .
 Pop-Location
 Push-Location infra\gitlab-demo\images\runner
-az acr build --registry $resources.registry --image runner:19.4.0-demo-v1 `
+az acr build --registry $resources.registry --image runner:19.4.0-demo-v2 `
   --platform linux/amd64 --file Dockerfile --subscription $subscription .
 Pop-Location
 ```
 
 Wait for **both builds to succeed**. The image builds validate Ruby/bash syntax,
 normalize Linux line endings, and verify the runner tools/dependencies.
+The GitLab image also checks its pinned base image's actual
+`/assets/init-container` boot command and required tools. The custom entrypoint
+executes that vendor command as PID 1; it does not assume the removed
+`/assets/wrapper` path or replace vendor signal handling.
 Resolve each tag's digest with `az acr repository show --image ... --query digest`
 and set private `gitlab_image_tag`/`runner_image_tag` values to
 `gitlab@sha256:...` and `runner@sha256:...`. Set `deploy_gitlab=true` in the private
@@ -240,10 +252,13 @@ source SHA. There is no Terraform apply per MR, preset flip, SLO weakening,
 `allow_failure`, or success-shaped error fallback.
 
 GitLab artifacts use `when: always`, retained for 30 days, and include source
-SHA, ZIP hash, GitLab pipeline/job IDs, ALT run ID/time window, raw run JSON,
+SHA, ZIP hash, GitLab pipeline/job IDs, ALT run ID/time window, run JSON snapshots,
 criteria, p95/errors, unchanged load-contract/functional-output hashes and
 downloaded engine results/logs/report. `demo-run.json` in the private presenter
 directory records the before/after pair and resulting promotion URL.
+Snapshots keep the server's measurement fields but exclude SAS-bearing artifact
+URLs and credential fields. Explicit job/script timeouts leave time to upload
+failure evidence rather than relying on GitLab's ineffective default timeout.
 
 For a new presentation, explicitly reset **only this demo**:
 
@@ -259,6 +274,38 @@ continues serving the previous tested artifact until the new green promotion.
 If a prior attempt stopped, inspect its evidence and close that stopped demo MR
 before reset. Never delete controller locks without verifying their process
 has exited.
+
+The shell runner explicitly forwards its tool paths and ACA's local managed
+identity endpoint/header into the job environment: `su --login` otherwise drops
+them. It does not forward the runner authentication token. The local identity
+header stays in the root-only runner configuration, not project variables or
+artifacts; trusted jobs use it to obtain short-lived Azure tokens.
+
+## Bounded recovery environment
+
+If the original environment fails during platform provisioning, do not loop
+PATCH calls or delete its data. After fixing the exact prerequisite, the private
+`use_clean_environment=true` option provisions **one** explicitly named recovery
+target: `cae-gitlab-demo-clean`, subnet `container-apps-clean` (`10.74.2.0/23`) and
+app `gitlab-clean`. It preserves the original environment/subnet/NFS binding and
+share, adds only the new subnet to the storage firewall, and uses the same pinned
+images, credentials and scoped identities. Never enable it to perform a rolling
+update of a healthy GitLab instance.
+
+An original Failed app cannot be imported by AzureRM while `listSecrets` returns
+`ResourceNotProvisioned`. Its ID and the inactive `aca-platform-probe` diagnostic
+job are retained explicitly as read-only inventory in state/outputs instead of
+deleting or pretending to manage them. Review the recovery plan: it must have
+**zero destroys**. An assigned recovery hostname is not a healthy service.
+If the clean target also cannot allocate, stop cloud retries and report the
+actual blocker and retained resources. No VM fallback or policy changes.
+
+Retained environment networking can have charges. The manual diagnostic job has
+no schedule and no active compute after its bounded execution. Before eventual
+full lab destruction, explicitly review and remove the exact retained failed
+app/diagnostic job IDs reported by Terraform; they are read-only inventory, so
+Terraform does not delete them. Resource-group deletion intentionally refuses
+unmanaged leftovers rather than silently deleting them.
 
 ## Reading results without the portal
 

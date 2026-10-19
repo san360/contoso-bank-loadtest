@@ -6,9 +6,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN apt-get update -qq \
-    && apt-get install --no-install-recommends -y git bash ca-certificates curl procps \
+    && apt-get install --no-install-recommends -y git bash ca-certificates curl procps util-linux \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --shell /bin/bash gitlab-runner
+    && useradd --create-home --shell /bin/bash gitlab-runner \
+    && rm -f /home/gitlab-runner/.bash_logout \
+    && command -v su
 COPY --from=runner /usr/bin/gitlab-runner /usr/local/bin/gitlab-runner
 COPY requirements-dev.txt /opt/demo-requirements.txt
 RUN pip install --no-cache-dir azure-cli==2.89.0 \
@@ -20,7 +22,9 @@ RUN pip install --no-cache-dir azure-cli==2.89.0 \
     && gitlab-runner --version \
     && /opt/demo-python/bin/python -c "import fastapi, httpx; print('Runner Python dependencies verified')"
 COPY entrypoint.sh /opt/demo-entrypoint.sh
+COPY configure.py /opt/configure-runner.py
 RUN sed -i 's/\r$//' /opt/demo-entrypoint.sh \
     && chmod 755 /opt/demo-entrypoint.sh \
-    && bash -n /opt/demo-entrypoint.sh
+    && bash -n /opt/demo-entrypoint.sh \
+    && python -m py_compile /opt/configure-runner.py
 ENTRYPOINT ["/opt/demo-entrypoint.sh"]

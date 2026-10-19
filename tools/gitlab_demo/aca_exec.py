@@ -25,12 +25,13 @@ def execute(resources: dict, script: str, *, timeout=900) -> str:
 
     subscription = resources["subscription_id"]
     group = resources["resource_group"]
+    app_name = resources["gitlab_app_name"]
     app = json.loads(azure([
-        "containerapp", "show", "--name", "gitlab", "--resource-group", group, "-o", "json",
+        "containerapp", "show", "--name", app_name, "--resource-group", group, "-o", "json",
     ], subscription))
     revision = app["properties"]["latestRevisionName"]
     replicas = json.loads(azure([
-        "containerapp", "replica", "list", "--name", "gitlab", "--resource-group", group,
+        "containerapp", "replica", "list", "--name", app_name, "--resource-group", group,
         "--revision", revision, "-o", "json",
     ], subscription))
     if len(replicas) != 1:
@@ -43,7 +44,7 @@ def execute(resources: dict, script: str, *, timeout=900) -> str:
     endpoint = container["logStreamEndpoint"].split("/subscriptions/")[0]
     url = (
         endpoint.replace("https://", "wss://", 1)
-        + f"/subscriptions/{subscription}/resourceGroups/{group}/containerApps/gitlab"
+        + f"/subscriptions/{subscription}/resourceGroups/{group}/containerApps/{app_name}"
         + f"/revisions/{revision}/replicas/{replica['name']}/containers/gitlab/exec?command=bash"
     )
     token = json.loads(azure([

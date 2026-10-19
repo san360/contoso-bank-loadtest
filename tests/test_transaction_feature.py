@@ -73,6 +73,10 @@ class TransactionFeatureTests(unittest.TestCase):
         with patch.object(main, "DEMO_ADMIN_TOKEN", "test-only-token"):
             with TestClient(main.app) as client:
                 self.assertEqual(client.post("/admin/reset").status_code, 401)
+                self.assertEqual(
+                    client.post("/admin/reset", headers={b"X-Demo-Admin-Token": b"\xff"}).status_code,
+                    401,
+                )
                 self.assertEqual(client.get("/version").status_code, 200)
                 self.assertEqual(
                     client.get(

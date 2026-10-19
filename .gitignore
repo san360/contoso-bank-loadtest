@@ -38,6 +38,7 @@ src/.venv/
 # azd stores subscription IDs, resource names and per-environment settings here.
 # These files describe a live tenant/subscription and should stay local.
 .azure/
+.azure-*/
 
 # -----------------------------------------------------------------------------
 # Terraform local state and plans

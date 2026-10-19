@@ -36,6 +36,12 @@ variable "deploy_runner" {
   default     = false
 }
 
+variable "use_clean_environment" {
+  description = "One explicit recovery environment/subnet, retaining the original failed target."
+  type        = bool
+  default     = false
+}
+
 variable "gitlab_root_password" {
   type      = string
   sensitive = true
@@ -60,10 +66,10 @@ variable "app_admin_token" {
 
 variable "gitlab_image_tag" {
   type    = string
-  default = "gitlab:19.4.2-demo-v1"
+  default = "gitlab:19.4.2-demo-v2"
 }
 
 variable "runner_image_tag" {
   type    = string
-  default = "runner:19.4.0-demo-v1"
+  default = "runner:19.4.0-demo-v2"
 }

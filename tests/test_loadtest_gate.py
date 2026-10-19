@@ -1,7 +1,7 @@
 import copy
 import unittest
 
-from tools.loadtest_gate import check_demo_contract, evaluate
+from tools.loadtest_gate import check_demo_contract, evaluate, run_snapshot
 
 
 def settled(result="PASSED", latency=75):
@@ -56,7 +56,7 @@ class LoadTestGateTests(unittest.TestCase):
             verdict = evaluate(settled(aggregate, 1150))
             self.assertEqual(verdict.outcome, "performance_failed")
             check_demo_contract(verdict)
-        self.assertEqual(evaluate(settled("FAILED", 70)).outcome, "unjudgeable")
+        self.assertEqual(evaluate(settled("FAILED", 70)).outcome, "pending")
 
     def test_incomplete_statistics_or_values_cannot_pass(self):
         for field, value in (("sampleCount", 0), ("errorPct", None), ("pct2ResTime", "NaN")):
@@ -79,6 +79,24 @@ class LoadTestGateTests(unittest.TestCase):
             run["passFailCriteria"]["passFailMetrics"]["latency"].update(change)
             with self.assertRaises(ValueError):
                 check_demo_contract(evaluate(run))
+
+    def test_headline_statistics_cannot_hide_a_threshold_breach(self):
+        for field, value in (("pct2ResTime", 900), ("errorPct", 25)):
+            run = settled()
+            run["testRunStatistics"]["Total"][field] = value
+            with self.assertRaises(ValueError):
+                check_demo_contract(evaluate(run))
+
+    def test_evidence_keeps_measurements_but_not_download_credentials(self):
+        run = settled()
+        run["artifactsContainerInfo"] = {"url": "https://example.invalid/?sig=test-fixture"}
+        run["secrets"] = {"key": "test-fixture"}
+        run["startDateTime"] = "2026-10-19T13:29:50Z"
+        snapshot = run_snapshot(run)
+        self.assertEqual(evaluate(snapshot).as_dict(), evaluate(run).as_dict())
+        self.assertEqual(snapshot["startDateTime"], run["startDateTime"])
+        self.assertNotIn("artifactsContainerInfo", snapshot)
+        self.assertNotIn("secrets", snapshot)
 
 
 if __name__ == "__main__":

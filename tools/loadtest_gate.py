@@ -37,6 +37,16 @@ def number(value: Any) -> float | None:
     return result if math.isfinite(result) else None
 
 
+def run_snapshot(run: dict[str, Any]) -> dict[str, Any]:
+    fields = (
+        "testRunId", "testId", "displayName", "description", "status", "testResult",
+        "passFailCriteria", "testRunStatistics", "loadTestConfiguration", "testStopReason",
+        "createdDateTime", "executedDateTime", "startDateTime", "endDateTime",
+        "lastModifiedDateTime",
+    )
+    return {name: run[name] for name in fields if name in run}
+
+
 def evaluate(run: dict[str, Any]) -> Verdict:
     status = run.get("status")
     if status != "DONE":
@@ -77,7 +87,7 @@ def evaluate(run: dict[str, Any]) -> Verdict:
     if any(str(item["result"]).lower() == "failed" for item in criteria):
         return Verdict("performance_failed", "One or more settled criteria breached", **details)
     if aggregate == "FAILED":
-        return Verdict("unjudgeable", "Aggregate FAILED without a measured criterion breach", **details)
+        return Verdict("pending", "Aggregate FAILED but per-criterion evidence has not caught up", **details)
     return Verdict("passed", "Aggregate and every measured criterion passed", **details)
 
 
@@ -97,9 +107,16 @@ def check_demo_contract(verdict: Verdict) -> None:
     if len(verdict.criteria) != 2 or actual != expected:
         raise ValueError(f"Run criteria do not match the fixed transaction gate: {actual!r}")
     for item in verdict.criteria:
-        measured_failure = number(item["actualValue"]) > number(item["value"])
+        measured = number(item.get("actualValue"))
+        threshold = number(item.get("value"))
+        if measured is None or threshold is None:
+            raise ValueError("Criterion measurements are missing or nonfinite")
+        measured_failure = measured > threshold
         if measured_failure != (str(item["result"]).lower() == "failed"):
             raise ValueError("A criterion's measured value contradicts its verdict")
+        headline = verdict.p95_ms if str(item["clientMetric"]).lower() == "response_time_ms" else verdict.error_pct
+        if headline is None or (headline > threshold) != measured_failure:
+            raise ValueError("Headline client statistics contradict the measured criterion")
 
 
 def main() -> int:

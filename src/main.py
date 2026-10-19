@@ -466,7 +466,7 @@ async def correlation_and_timing(request: Request, call_next):
     global REQUEST_COUNT
     if request.url.path.startswith("/admin") and DEMO_ADMIN_TOKEN:
         supplied = request.headers.get("X-Demo-Admin-Token", "")
-        if not hmac.compare_digest(supplied, DEMO_ADMIN_TOKEN):
+        if not hmac.compare_digest(supplied.encode("utf-8"), DEMO_ADMIN_TOKEN.encode("utf-8")):
             return JSONResponse(status_code=401, content={"error": "Admin token required"})
     REQUEST_COUNT += 1
     correlation_id = request.headers.get("X-Correlation-Id", str(uuid.uuid4()))

@@ -107,6 +107,7 @@ def seed(args) -> None:
             "squash_option": "never",
             "auto_devops_enabled": False,
             "shared_runners_enabled": False,
+            "build_timeout": 2400,
             "ci_allow_fork_pipelines_to_run_in_parent_project": False,
             "protect_merge_request_pipelines": True,
             "ci_pipeline_variables_minimum_override_role": "maintainer",

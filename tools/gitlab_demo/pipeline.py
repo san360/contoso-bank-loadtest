@@ -12,11 +12,12 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tools.loadtest_gate import check_demo_contract, evaluate
+from tools.loadtest_gate import check_demo_contract, evaluate, run_snapshot
 
 from .common import (
     DEMO_BRANCH, TEST_ID, DemoError, GitLab, ROOT, azure, contract_digest,
@@ -158,20 +159,30 @@ class Context:
     def login(self) -> None:
         run([
             "az", "login", "--identity", "--client-id", required("AZURE_CLIENT_ID"),
-            "--only-show-errors", "-o", "none",
+            "--allow-no-subscriptions", "--only-show-errors", "-o", "none",
         ], timeout=120)
 
 
 def check_mr(context: Context) -> dict:
     iid = required("CI_MERGE_REQUEST_IID")
-    mr = context.client.get(f"/merge_requests/{iid}")
-    if (
-        mr["state"] != "opened" or mr["source_branch"] != DEMO_BRANCH
-        or mr["target_branch"] != "main" or mr["sha"] != context.source_sha
-        or str(mr["source_project_id"]) != str(context.client.project_id)
-        or str(mr["target_project_id"]) != str(context.client.project_id)
-    ):
-        raise DemoError("Only the current, same-project, protected demo MR may use staging")
+    deadline = time.monotonic() + 60
+    while True:
+        mr = context.client.get(f"/merge_requests/{iid}")
+        branch = context.client.get(
+            f"/repository/branches/{urllib.parse.quote(DEMO_BRANCH, safe='')}"
+        )
+        if (
+            mr["state"] != "opened" or mr["source_branch"] != DEMO_BRANCH
+            or mr["target_branch"] != "main" or branch["commit"]["id"] != context.source_sha
+            or str(mr["source_project_id"]) != str(context.client.project_id)
+            or str(mr["target_project_id"]) != str(context.client.project_id)
+        ):
+            raise DemoError("Only the current, same-project, protected demo MR may use staging")
+        if mr["sha"] == context.source_sha:
+            break
+        if time.monotonic() >= deadline:
+            raise DemoError("GitLab's MR diff cache did not catch up with the verified source branch")
+        time.sleep(2)
     opened = context.client.get("/merge_requests?state=opened&per_page=100")
     if len(opened) != 1 or str(opened[0]["iid"]) != iid:
         raise DemoError("The isolated demo requires exactly one open candidate MR")
@@ -197,7 +208,7 @@ def wait_load_run(context: Context, run_id: str, *, seconds=1200, settle_seconds
         payload = json.loads(context.load_cli([
             "test-run", "show", "--test-run-id", run_id, "-o", "json",
         ]))
-        write_json(EVIDENCE / "run.json", payload)
+        write_json(EVIDENCE / "run.json", run_snapshot(payload))
         verdict = evaluate(payload)
         print(f"ALT {run_id}: {payload.get('status')} / {verdict.outcome}", flush=True)
         if verdict.outcome != "pending":

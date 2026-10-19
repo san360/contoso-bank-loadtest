@@ -6,7 +6,11 @@ locals {
     project         = "contoso-gitlab-demo"
     purpose         = "experimental-aca-only-poc"
   }
-  gitlab_url = "https://gitlab.${azurerm_container_app_environment.demo.default_domain}"
+  active_environment_id     = var.use_clean_environment ? azurerm_container_app_environment.clean[0].id : azurerm_container_app_environment.demo.id
+  active_environment_domain = var.use_clean_environment ? azurerm_container_app_environment.clean[0].default_domain : azurerm_container_app_environment.demo.default_domain
+  gitlab_name               = var.use_clean_environment ? "gitlab-clean" : "gitlab"
+  gitlab_storage_name       = var.use_clean_environment ? azurerm_container_app_environment_storage.clean[0].name : azurerm_container_app_environment_storage.gitlab.name
+  gitlab_url                = "https://${local.gitlab_name}.${local.active_environment_domain}"
   app_settings = {
     SCM_DO_BUILD_DURING_DEPLOYMENT      = "true"
     ENABLE_ORYX_BUILD                   = "true"
@@ -56,6 +60,24 @@ resource "azurerm_subnet" "aca" {
   }
 }
 
+resource "azurerm_subnet" "clean" {
+  count                = var.use_clean_environment ? 1 : 0
+  name                 = "container-apps-clean"
+  resource_group_name  = azurerm_resource_group.demo.name
+  virtual_network_name = azurerm_virtual_network.demo.name
+  address_prefixes     = ["10.74.2.0/23"]
+  service_endpoint {
+    service = "Microsoft.Storage"
+  }
+  delegation {
+    name = "container-apps"
+    service_delegation {
+      name    = "Microsoft.App/environments"
+      actions = ["Microsoft.Network/virtualNetworks/subnets/join/action"]
+    }
+  }
+}
+
 resource "azurerm_log_analytics_workspace" "demo" {
   name                = "log-gitlab-${local.token}"
   location            = var.location
@@ -84,6 +106,39 @@ resource "azurerm_container_app_environment" "demo" {
   tags = local.tags
 }
 
+resource "azurerm_container_app_environment" "clean" {
+  count                      = var.use_clean_environment ? 1 : 0
+  name                       = "cae-gitlab-demo-clean"
+  location                   = var.location
+  resource_group_name        = azurerm_resource_group.demo.name
+  infrastructure_subnet_id   = azurerm_subnet.clean[0].id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.demo.id
+  logs_destination           = "log-analytics"
+  workload_profile {
+    name                  = "Consumption"
+    workload_profile_type = "Consumption"
+    minimum_count         = 0
+    maximum_count         = 0
+  }
+  tags = local.tags
+}
+
+# AzureRM cannot import a Failed app because listSecrets rejects that state.
+# Inventory it read-only, preserving the failed target rather than deleting it.
+data "azurerm_resources" "retained_gitlab" {
+  count               = var.use_clean_environment ? 1 : 0
+  resource_group_name = azurerm_resource_group.demo.name
+  name                = "gitlab"
+  type                = "Microsoft.App/containerApps"
+}
+
+data "azurerm_resources" "diagnostic_job" {
+  count               = var.use_clean_environment ? 1 : 0
+  resource_group_name = azurerm_resource_group.demo.name
+  name                = "aca-platform-probe"
+  type                = "Microsoft.App/jobs"
+}
+
 # Experimental only: GitLab explicitly advises against Azure Files/NFS.
 # ACA NFS has no in-transit encryption; only this VNet can reach the share.
 resource "azurerm_storage_account" "gitlab" {
@@ -99,9 +154,12 @@ resource "azurerm_storage_account" "gitlab" {
   min_tls_version                 = "TLS1_2"
 
   network_rules {
-    default_action             = "Deny"
-    bypass                     = ["AzureServices"]
-    virtual_network_subnet_ids = [azurerm_subnet.aca.id]
+    default_action = "Deny"
+    bypass         = ["AzureServices"]
+    virtual_network_subnet_ids = concat(
+      [azurerm_subnet.aca.id],
+      var.use_clean_environment ? [azurerm_subnet.clean[0].id] : []
+    )
   }
 
   tags = local.tags
@@ -117,6 +175,15 @@ resource "azurerm_storage_share" "gitlab" {
 resource "azurerm_container_app_environment_storage" "gitlab" {
   name                         = "gitlab-nfs"
   container_app_environment_id = azurerm_container_app_environment.demo.id
+  share_name                   = "/${azurerm_storage_account.gitlab.name}/${azurerm_storage_share.gitlab.name}"
+  nfs_server_url               = "${azurerm_storage_account.gitlab.name}.file.core.windows.net"
+  access_mode                  = "ReadWrite"
+}
+
+resource "azurerm_container_app_environment_storage" "clean" {
+  count                        = var.use_clean_environment ? 1 : 0
+  name                         = "gitlab-nfs"
+  container_app_environment_id = azurerm_container_app_environment.clean[0].id
   share_name                   = "/${azurerm_storage_account.gitlab.name}/${azurerm_storage_share.gitlab.name}"
   nfs_server_url               = "${azurerm_storage_account.gitlab.name}.file.core.windows.net"
   access_mode                  = "ReadWrite"
@@ -237,9 +304,9 @@ resource "azurerm_role_assignment" "presenter_load" {
 
 resource "azurerm_container_app" "gitlab" {
   count                        = var.deploy_gitlab ? 1 : 0
-  name                         = "gitlab"
+  name                         = local.gitlab_name
   resource_group_name          = azurerm_resource_group.demo.name
-  container_app_environment_id = azurerm_container_app_environment.demo.id
+  container_app_environment_id = local.active_environment_id
   revision_mode                = "Single"
   max_inactive_revisions       = 1
 
@@ -276,7 +343,7 @@ resource "azurerm_container_app" "gitlab" {
 
     volume {
       name          = "gitlab"
-      storage_name  = azurerm_container_app_environment_storage.gitlab.name
+      storage_name  = local.gitlab_storage_name
       storage_type  = "NfsAzureFile"
       mount_options = "nfsvers=4.1,hard,timeo=600,retrans=2"
     }
@@ -293,10 +360,11 @@ resource "azurerm_container_app" "gitlab" {
       }
     }
     container {
-      name   = "gitlab"
-      image  = "${azurerm_container_registry.demo.login_server}/${var.gitlab_image_tag}"
-      cpu    = 4
-      memory = "8Gi"
+      name  = "gitlab"
+      image = "${azurerm_container_registry.demo.login_server}/${var.gitlab_image_tag}"
+      # The init container and main container together must fit Consumption's 4/8 limit.
+      cpu    = 3.75
+      memory = "7.5Gi"
 
       env {
         name  = "GITLAB_EXTERNAL_URL"
@@ -358,7 +426,7 @@ resource "azurerm_container_app" "runner" {
   count                        = var.deploy_runner ? 1 : 0
   name                         = "gitlab-runner"
   resource_group_name          = azurerm_resource_group.demo.name
-  container_app_environment_id = azurerm_container_app_environment.demo.id
+  container_app_environment_id = local.active_environment_id
   revision_mode                = "Single"
   max_inactive_revisions       = 1
   identity {

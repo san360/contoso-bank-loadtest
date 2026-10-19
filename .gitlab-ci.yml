@@ -9,7 +9,6 @@ stages: [validate, package, performance, promote]
 default:
   tags: [aca-demo]
   interruptible: false
-  timeout: 40m
   before_script:
     - export AZURE_CONFIG_DIR="$CI_PROJECT_DIR/.azure-$CI_JOB_ID"
     - export PYTHONUNBUFFERED=1
@@ -26,12 +25,14 @@ variables:
 functional_tests:
   extends: .mr_only
   stage: validate
+  timeout: 5m
   script:
     - python -m unittest discover -s tests -v
 
 candidate_artifact:
   extends: .mr_only
   stage: package
+  timeout: 5m
   script:
     - python -m tools.gitlab_demo.pipeline build
   artifacts:
@@ -42,6 +43,10 @@ candidate_artifact:
 performance_gate:
   extends: .mr_only
   stage: performance
+  timeout: 40m
+  variables:
+    RUNNER_SCRIPT_TIMEOUT: 35m
+    RUNNER_AFTER_SCRIPT_TIMEOUT: 3m
   resource_group: contoso-gitlab-demo-staging
   needs: [functional_tests, candidate_artifact]
   script:
@@ -53,6 +58,10 @@ performance_gate:
 
 promote_tested_slot:
   stage: promote
+  timeout: 25m
+  variables:
+    RUNNER_SCRIPT_TIMEOUT: 20m
+    RUNNER_AFTER_SCRIPT_TIMEOUT: 3m
   resource_group: contoso-gitlab-demo-staging
   rules:
     - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH == "main" && $DEMO_PROMOTE_SHA'
