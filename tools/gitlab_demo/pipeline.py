@@ -24,6 +24,7 @@ from .common import (
     http_json, https_origin, read_json, required, run, sha, write_json,
 )
 from . import monitoring
+from .azure_http import AzureAPIError, ScopedLoadTest
 
 EVIDENCE = ROOT / "demo-evidence"
 DIST = ROOT / "dist"
@@ -235,6 +236,23 @@ def wait_load_run(context: Context, run_id: str, *, seconds=1200, settle_seconds
     raise DemoError("ALT run did not reach a judged terminal state within the bounded timeout")
 
 
+def upsert_test(context: Context, config_file: Path) -> str:
+    client = ScopedLoadTest(context.subscription, context.tenant, context.load_id)
+    try:
+        client.request("GET", f"tests/{TEST_ID}")
+    except AzureAPIError as error:
+        if error.status != 404:
+            raise
+        operation = "create"
+    else:
+        operation = "update"
+    context.load_cli([
+        "test", operation, "--test-id", TEST_ID, "--load-test-config-file",
+        str(config_file), "-o", "none",
+    ], timeout=300)
+    return operation
+
+
 def gate(context: Context) -> int:
     EVIDENCE.mkdir(exist_ok=True)
     summary = {
@@ -281,10 +299,7 @@ def gate(context: Context) -> int:
         if context.main_sha() != main_sha:
             raise DemoError("main drifted during candidate preparation")
         render_test(context.staging, EVIDENCE / "input")
-        context.load_cli([
-            "test", "create", "--test-id", TEST_ID, "--load-test-config-file",
-            str(EVIDENCE / "input" / "transactions.yaml"), "-o", "none",
-        ], timeout=300)
+        upsert_test(context, EVIDENCE / "input" / "transactions.yaml")
         monitoring.configure(context, EVIDENCE)
         context.load_cli([
             "test-run", "create", "--test-id", TEST_ID, "--test-run-id", run_id, "--no-wait",

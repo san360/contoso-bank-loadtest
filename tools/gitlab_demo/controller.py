@@ -186,13 +186,34 @@ def wait_merge_status(client: GitLab, iid: int, pipeline: dict, expected: str) -
     raise DemoError(f"GitLab merge checks did not settle to {expected} within 120 seconds")
 
 
-def execute(folder: Path) -> dict:
+def resume_context(client: GitLab, report: dict, source_sha: str) -> tuple[str, int, str]:
+    if report.get("status") != "stopped" or "before" in report or "green_sha" in report:
+        raise DemoError("Resume is only supported for an explicitly repaired pre-red setup failure")
+    source_sha = sha(source_sha)
+    iid = int(report["mr_iid"])
+    opened = client.get("/merge_requests?state=opened&per_page=100")
+    if len(opened) != 1 or opened[0]["iid"] != iid:
+        raise DemoError("Resume requires the original single open MR")
+    base = sha(report["base_main_sha"])
+    branch = client.get(f"/repository/branches/{urllib.parse.quote(DEMO_BRANCH, safe='')}")
+    if branch["commit"]["id"] != source_sha or client.get("/repository/branches/main")["commit"]["id"] != base:
+        raise DemoError("Resume source or original target base changed unexpectedly")
+    feature = base64.b64decode(file_at(client, FEATURE_FILE, source_sha)["content"]).decode()
+    naive = (ROOT / "tools" / "gitlab_demo" / "recipes" / "naive.py").read_text()
+    if feature.replace("\r\n", "\n") != naive:
+        raise DemoError("Resume requires the unchanged naive feature, not a preset or premature batching fix")
+    return base, iid, source_sha
+
+
+def execute(folder: Path, resume_source_sha: str | None = None) -> dict:
     config = read_json(folder / "gitlab.json")
     credentials = read_json(folder / "secrets.json")
     client = GitLab(config["gitlab_url"], credentials["project_token"], config["project_id"])
-    report = {"started_at": now(), "status": "starting", "scripted_not_autonomous_ai": True}
     report_path = folder / "demo-run.json"
-    write_json(report_path, report)
+    report = (
+        read_json(report_path) if resume_source_sha else
+        {"started_at": now(), "status": "starting", "scripted_not_autonomous_ai": True}
+    )
     with exclusive(folder / "controller.lock"):
         try:
             project = client.get()
@@ -203,44 +224,54 @@ def execute(folder: Path) -> dict:
                 or not project.get("protect_merge_request_pipelines")
             ):
                 raise DemoError("Required merge checks, fast-forward mode or MR resource protection changed")
-            if client.get("/merge_requests?state=opened&per_page=100"):
-                raise DemoError("An MR is already open; this lab allows one candidate at a time")
             runners = client.get("/runners?per_page=100")
             if not any(
                 item["id"] == config["runner_id"] and item.get("status") == "online"
                 for item in runners
             ):
                 raise DemoError("The project-specific ACA runner is not online")
-            try:
-                client.get(f"/repository/branches/{urllib.parse.quote(DEMO_BRANCH, safe='')}")
-            except APIError as error:
-                if error.status != 404:
-                    raise
+            if resume_source_sha:
+                base, iid, red_sha = resume_context(client, report, resume_source_sha)
+                write_json(folder / f"demo-run-stopped-{report['red_sha'][:8]}.json", report)
+                report.update(
+                    status="resuming_explicit_repair", resumed_at=now(),
+                    previous_red_sha=report["red_sha"], red_sha=red_sha,
+                )
             else:
-                raise DemoError("The fixed demo branch already exists. Use the documented explicit reset first")
-            base = sha(client.get("/repository/branches/main")["commit"]["id"])
-            original = base64.b64decode(file_at(client, FEATURE_FILE, base)["content"]).decode()
-            if feature_name(original) != "none":
-                raise DemoError("main already contains the feature. Reset this isolated demo before another launch")
-            red_sha = commit_recipe(
-                client, "naive", "Add merchant and category enrichment to transaction history",
-                start_sha=base,
-            )
-            mr = client.request("POST", client.project + "/merge_requests", {
-                "source_branch": DEMO_BRANCH, "target_branch": "main",
-                "title": "Demo: merchant/category enrichment with a measured performance gate",
-                "description": (
-                    "This is an explicitly scripted demo, not autonomous AI remediation. "
-                    "The first commit adds correct merchant/category output using per-row lookups. "
-                    "Only a settled, measured p95 regression permits the controller to apply its "
-                    "prewritten batching patch. Functional output and the load contract stay unchanged."
-                ),
-                "remove_source_branch": False, "squash": False,
-            })
-            iid = mr["iid"]
-            report.update(mr_url=mr["web_url"], mr_iid=iid, base_main_sha=base, red_sha=red_sha)
+                if client.get("/merge_requests?state=opened&per_page=100"):
+                    raise DemoError("An MR is already open; this lab allows one candidate at a time")
+                try:
+                    client.get(f"/repository/branches/{urllib.parse.quote(DEMO_BRANCH, safe='')}")
+                except APIError as error:
+                    if error.status != 404:
+                        raise
+                else:
+                    raise DemoError("The fixed demo branch already exists. Use the documented explicit reset first")
+                base = sha(client.get("/repository/branches/main")["commit"]["id"])
+                original = base64.b64decode(file_at(client, FEATURE_FILE, base)["content"]).decode()
+                if feature_name(original) != "none":
+                    raise DemoError("main already contains the feature. Reset this isolated demo before another launch")
+                red_sha = commit_recipe(
+                    client, "naive", "Add merchant and category enrichment to transaction history",
+                    start_sha=base,
+                )
+                mr = client.request("POST", client.project + "/merge_requests", {
+                    "source_branch": DEMO_BRANCH, "target_branch": "main",
+                    "title": "Demo: merchant/category enrichment with a measured performance gate",
+                    "description": (
+                        "This is an explicitly scripted demo, not autonomous AI remediation. "
+                        "The first commit adds correct merchant/category output using per-row lookups. "
+                        "Only a settled, measured p95 regression permits the controller to apply its "
+                        "prewritten batching patch. Functional output and the load contract stay unchanged."
+                    ),
+                    "remove_source_branch": False, "squash": False,
+                })
+                iid = mr["iid"]
+                report.update(mr_url=mr["web_url"], mr_iid=iid, base_main_sha=base, red_sha=red_sha)
             write_json(report_path, report)
             red_pipeline = wait_mr_pipeline(client, iid, red_sha)
+            report["red_pipeline_id"] = red_pipeline["id"]
+            write_json(report_path, report)
             before, _ = gate_evidence(client, red_pipeline, expect_red=True)
             before["fresh_measurement"] = verify_measurement(config, before, expect_red=True)
             report.update(status="expected_regression_verified", before=before)
@@ -368,8 +399,9 @@ def reset(folder: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["run", "reset"])
+    parser.add_argument("operation", choices=["run", "reset", "resume"])
     parser.add_argument("--private-dir", required=True, type=Path)
+    parser.add_argument("--source-sha", help="Explicit repaired naive-source SHA; required only for pre-red resume")
     args = parser.parse_args()
     try:
         folder = args.private_dir.resolve()
@@ -378,7 +410,9 @@ def main() -> int:
         if args.operation == "reset":
             reset(folder)
             return 0
-        result = execute(folder)
+        if args.operation == "resume" and not args.source_sha:
+            raise DemoError("Explicit --source-sha is required; resume never retries or repairs a pipeline itself")
+        result = execute(folder, args.source_sha if args.operation == "resume" else None)
         print(json.dumps(result, indent=2))
         return 0
     except (DemoError, ValueError, OSError, subprocess.TimeoutExpired) as error:

@@ -255,6 +255,17 @@ pair. It never takes a runner slot. It stops on infrastructure/authentication/
 functional failures, no criteria, unsettled results, cancellation, source drift,
 wrong failures, or missing artifacts; it does not auto-retry arbitrary failures.
 
+If an operator repairs a **pre-red setup** failure on the same MR, an explicit
+`controller resume --private-dir $private --source-sha <repaired-naive-SHA>`
+continues that original MR. It creates no new scenario, reruns no job itself,
+archives the stopped report, checks the unchanged target base and exact naive
+feature, and still requires a real settled p95-only failure before batching.
+It cannot resume past a measured-red phase or accept a prematurely batched
+feature. Setup uses a scoped test lookup: existing definitions are updated,
+only a real HTTP 404 is created, and authorization/network failures stop loudly.
+App-component and seven server-metric bindings are configured/read back after
+each update; no existing test/run history is deleted.
+
 The fixed gate is one engine, 12 VUs, 10-second ramp, 90-second duration, a
 40-row read-only page, p95 response time no higher than 500 ms and errors no
 higher than 1%. It does not exercise the original JMeter property/environment

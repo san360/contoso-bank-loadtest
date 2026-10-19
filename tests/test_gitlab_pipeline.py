@@ -5,12 +5,13 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from tools.gitlab_demo.common import DemoError, contract_digest, https_origin, write_json
-from tools.gitlab_demo.controller import file_at, gate_evidence, wait_merge_status
-from tools.gitlab_demo.pipeline import check_mr, feature_name, functional_digest, render_test, verify_candidate
+from tools.gitlab_demo.controller import file_at, gate_evidence, resume_context, wait_merge_status
+from tools.gitlab_demo.pipeline import check_mr, feature_name, functional_digest, render_test, upsert_test, verify_candidate
 from tools.gitlab_demo.aca_exec import ExecError
+from tools.gitlab_demo.azure_http import AzureAPIError
 from tools.gitlab_demo.verify import LoginForm
 
 
@@ -181,6 +182,45 @@ class GitLabPipelineTests(unittest.TestCase):
         import base64
         self.assertEqual(base64.b64decode(result["content"]), b'FEATURE = "none"\n')
         self.assertEqual(result["last_commit_id"], "b" * 40)
+
+    @patch("tools.gitlab_demo.pipeline.ScopedLoadTest")
+    def test_existing_test_updates_and_only_not_found_creates(self, factory):
+        context = Mock(subscription="sub", tenant="tenant", load_id="resource")
+        client = factory.return_value
+        client.request.return_value = {"testId": "contoso-gitlab-transactions"}
+        self.assertEqual(upsert_test(context, Path("transactions.yaml")), "update")
+        self.assertEqual(context.load_cli.call_args.args[0][:2], ["test", "update"])
+        context.reset_mock()
+        client.request.side_effect = AzureAPIError(404, "LoadTestNotFound", "not found")
+        self.assertEqual(upsert_test(context, Path("transactions.yaml")), "create")
+        self.assertEqual(context.load_cli.call_args.args[0][:2], ["test", "create"])
+        for error in (AzureAPIError(403, "Forbidden", "denied"), OSError("network unavailable")):
+            context.reset_mock()
+            client.request.side_effect = error
+            with self.assertRaises((DemoError, OSError)):
+                upsert_test(context, Path("transactions.yaml"))
+            context.load_cli.assert_not_called()
+
+    def test_explicit_resume_rejects_measured_phase_or_a_premature_fix(self):
+        import base64
+        from tools.gitlab_demo.common import ROOT
+        source, base = "b" * 40, "a" * 40
+        report = {"status": "stopped", "mr_iid": 1, "base_main_sha": base}
+
+        class Client:
+            def get(self, suffix):
+                if suffix.startswith("/merge_requests?"):
+                    return [{"iid": 1}]
+                return {"commit": {"id": base if suffix.endswith("/main") else source}}
+
+        naive = (ROOT / "tools" / "gitlab_demo" / "recipes" / "naive.py").read_text().encode()
+        with patch("tools.gitlab_demo.controller.file_at", return_value={"content": base64.b64encode(naive).decode()}):
+            self.assertEqual(resume_context(Client(), report, source), (base, 1, source))
+            with self.assertRaises(DemoError):
+                resume_context(Client(), {**report, "before": {}}, source)
+        with patch("tools.gitlab_demo.controller.file_at", return_value={"content": base64.b64encode(b"batched already").decode()}):
+            with self.assertRaises(DemoError):
+                resume_context(Client(), report, source)
 
 
 if __name__ == "__main__":
