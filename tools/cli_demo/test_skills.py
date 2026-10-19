@@ -281,6 +281,17 @@ GET,/two,10,0,90
         self.assertEqual(report["requestFiles"], [])
         self.assertEqual(len(report["metricFiles"]), 2)
 
+    def test_all_client_metric_map_preserves_metric_identity(self):
+        self.write("all-client-metrics.json", json.dumps({
+            "ResponseTime": [{"data": [{"timestamp": "2026-10-19T10:00:00Z", "value": 12}]}],
+            "VirtualUsers": [{"data": [{"timestamp": "2026-10-19T10:00:00Z", "value": 5}]}],
+            "Errors": [{"data": []}],
+        }))
+        report = self.report()
+        self.assertTrue(report["complete"], report["problems"])
+        self.assertEqual(report["requestFiles"], [])
+        self.assertEqual({item["metric"] for item in report["metricFiles"]}, {"ResponseTime", "VirtualUsers"})
+
     def test_utf16_metadata_from_windows_powershell_is_readable(self):
         self.write("run.json", '{"testRunId":"one","status":"DONE"}'.encode("utf-16"))
         self.assertEqual(self.report()["runs"][0]["status"], "DONE")

@@ -444,7 +444,12 @@ class Analyzer:
                     if isinstance(node.get(key), (list, dict)):
                         visit(node[key], name)
 
-        visit(data)
+        if (isinstance(data, dict)
+                and not any(key in data for key in ("value", "timeseries", "timeSeries", "data"))):
+            for name, series in data.items():
+                visit(series, name)
+        else:
+            visit(data)
         for name, points in values.items():
             self.report["metricFiles"].append({
                 "source": redact(source), "metric": redact(name), "datapoints": len(points),

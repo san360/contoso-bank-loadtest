@@ -202,6 +202,7 @@ class App:
     def _execute(self, plan: Plan) -> None:
         job = self.jobs[plan.id]
         terminal_state = "failed"
+        client_definitions = None
         try:
             plan.directory.mkdir(parents=True)
             with self.lock:
@@ -243,10 +244,13 @@ class App:
                     entry["stdout"] = json.dumps(data, indent=2, ensure_ascii=True)[-24000:]
                     (plan.directory / command.artifact).write_text(
                         json.dumps(data, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
-                    if command.metric:
-                        entry["metricRows"] = metric_rows(data, command.metric, command.namespace)
+                    if command.artifact == "client-definitions.json":
+                        client_definitions = data
+                    if command.metric or command.namespace:
+                        definitions = client_definitions if command.namespace == "LoadTestRunMetrics" else None
+                        entry["metricRows"] = metric_rows(data, command.metric, command.namespace, definitions)
                         (plan.directory / Path(command.artifact).with_suffix(".csv")).write_text(
-                            csv_export(data, command.metric, command.namespace), encoding="utf-8")
+                            csv_export(data, command.metric, command.namespace, definitions), encoding="utf-8")
                         if not entry["metricRows"]:
                             with self.lock:
                                 job["warnings"].append(
@@ -254,6 +258,9 @@ class App:
                                     "Check ingestion delay, run times, metric name, permissions and retention.")
                     if command.artifact == "run.json" and isinstance(data, dict):
                         entry["verdict"] = run_verdict(data)
+                        if plan.action == "all-client-metrics" and data.get("testId") != plan.config.testId:
+                            raise ValueError("The selected run does not belong to the configured test ID. "
+                                             "Load runs for that test and select the matching execution.")
                         if plan.action == "collect-evidence" and str(data.get("status", "")).upper() not in TERMINAL:
                             raise ValueError("Run is not terminal yet. Wait for completion before collecting artifacts.")
                         if (plan.action == "collect-evidence" and plan.config.serverResourceId

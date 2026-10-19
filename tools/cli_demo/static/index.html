@@ -39,7 +39,7 @@
       <input id="test-id" data-config="testId" maxlength="50" autocomplete="off">
       <div class="section-heading"><label for="run-id">Run ID</label><button id="new-run" class="text-button">New ID</button></div>
       <input id="run-id" data-config="runId" maxlength="50" autocomplete="off">
-      <label for="run-picker">Existing runs</label>
+      <div class="section-heading"><label for="run-picker">Existing runs</label><button id="load-run-list" class="text-button">Load runs</button></div>
       <select id="run-picker"><option value="">List runs to select an execution</option></select>
       <div id="account-status" class="status-line">Check the signed-in account before the demo.</div>
       <details>
@@ -70,11 +70,20 @@ az extension add --name load</pre>
       <section id="tab-metrics" class="stage" hidden>
         <div class="stage-heading"><p class="eyebrow">WHAT THE LOAD GENERATOR SEES</p><h2>Client performance vs. engine health</h2>
           <p><code>LoadTestRunMetrics</code> measures requests. <code>EngineHealthMetrics</code> measures load generators, not your app servers.</p></div>
+        <p class="hint">Choose the test/run on the left, then preview and execute <strong>Get all client metrics</strong> to see every available client metric together. This only reads the selected run; it does not start a load test.</p>
         <div class="field-row">
           <div><label for="client-metric">Client metric name</label><input id="client-metric" data-config="clientMetric" list="client-metric-list"><datalist id="client-metric-list"></datalist></div>
           <div><label for="engine-metric">Engine metric name</label><input id="engine-metric" data-config="engineMetric" placeholder="CPU"></div>
         </div>
         <div id="actions-metrics" class="action-grid"></div>
+        <section id="client-overview" class="panel result-panel" aria-live="polite" hidden>
+          <div class="section-heading"><h2>All client metrics</h2><span id="client-metric-count" class="pill"></span></div>
+          <p id="client-metric-scope" class="hint"></p>
+          <p class="hint">One-minute buckets using CLI/service defaults. Values describe returned buckets, not whole-run totals. Missing datapoints are not assumed to be zero.</p>
+          <p id="client-metric-status" class="muted" role="status"></p>
+          <div id="client-metric-grid" class="client-metric-grid"></div>
+          <div id="client-metric-downloads" class="file-list"></div>
+        </section>
       </section>
 
       <section id="tab-server" class="stage" hidden>

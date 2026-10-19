@@ -63,7 +63,9 @@ ACTIONS = (
            "LoadTestRunMetrics is client traffic; EngineHealthMetrics is generator health."),
     Action("client-definitions", "Discover client metrics", "metrics",
            "Lists supported metric names, units, dimensions and aggregations."),
-    Action("client-metrics", "Get client metrics", "metrics",
+    Action("all-client-metrics", "Get all client metrics", "metrics",
+           "Fetches definitions and every client metric for the selected run, with named charts and JSON/CSV downloads."),
+    Action("client-metrics", "Get one client metric", "metrics",
            "Fetches one named client metric through az load and exports JSON plus CSV."),
     Action("engine-metrics", "Get engine health", "metrics",
            "Fetches generator CPU, not application CPU. Exports JSON plus CSV."),
@@ -332,6 +334,15 @@ def build_commands(action_id: str, config: Config, artifact_dir: Path) -> list[C
     if action_id == "client-definitions":
         return [load(["test-run", "metrics", "get-definitions", *config.run_scope(),
                       "--metric-namespace", "LoadTestRunMetrics"], "client-definitions.json")]
+    if action_id == "all-client-metrics":
+        config.test_scope()
+        return [
+            *build_commands("show-run", config, artifact_dir),
+            *build_commands("client-definitions", config, artifact_dir),
+            load(["test-run", "metrics", "list", *config.run_scope(),
+                  "--metric-namespace", "LoadTestRunMetrics", "--interval", "PT1M"],
+                 "all-client-metrics.json", namespace="LoadTestRunMetrics"),
+        ]
     if action_id == "client-metrics":
         return [metrics("LoadTestRunMetrics", config.clientMetric, "client-metrics.json")]
     if action_id == "engine-metrics":
@@ -424,8 +435,23 @@ def run_verdict(run: dict[str, Any]) -> dict[str, str]:
     return {"label": "PASSED", "kind": "good", "detail": "Execution and all fail criteria passed."}
 
 
-def metric_rows(payload: Any, metric: str = "", namespace: str = "") -> list[dict[str, Any]]:
+def metric_rows(payload: Any, metric: str = "", namespace: str = "",
+                definitions: Any = None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    definition_list = definitions.get("value", []) if isinstance(definitions, dict) else definitions or []
+    metadata = {}
+    for definition in definition_list:
+        if isinstance(definition, dict):
+            name = definition.get("name")
+            if isinstance(name, dict):
+                name = name.get("value")
+            if isinstance(name, str):
+                metadata[name] = definition
+
+    def context_for(name: str) -> dict[str, Any]:
+        definition = metadata.get(name, {})
+        return {"metric": name, "namespace": definition.get("namespace") or namespace,
+                "unit": definition.get("unit") or "", "dimensions": ""}
 
     def visit(node: Any, context: dict[str, Any]) -> None:
         if isinstance(node, list):
@@ -455,16 +481,21 @@ def metric_rows(payload: Any, metric: str = "", namespace: str = "") -> list[dic
             if isinstance(node.get(key), (list, dict)):
                 visit(node[key], context)
 
-    visit(payload, {"metric": metric, "namespace": namespace, "unit": "", "dimensions": ""})
+    if (not metric and namespace and isinstance(payload, dict)
+            and not any(key in payload for key in ("value", "timeseries", "timeSeries", "data"))):
+        for name, series in payload.items():
+            visit(series, context_for(name))
+    else:
+        visit(payload, context_for(metric))
     return rows
 
 
-def csv_export(payload: Any, metric: str = "", namespace: str = "") -> str:
+def csv_export(payload: Any, metric: str = "", namespace: str = "", definitions: Any = None) -> str:
     output = io.StringIO(newline="")
     columns = ["timestamp", "namespace", "metric", "unit", "dimensions", "aggregation", "value"]
     writer = csv.DictWriter(output, fieldnames=columns)
     writer.writeheader()
-    for row in metric_rows(payload, metric, namespace):
+    for row in metric_rows(payload, metric, namespace, definitions):
         # Downloads can be opened in Excel; do not allow a metric/dimension to become a formula.
         writer.writerow({key: "'" + value if isinstance(value, str)
                          and value.startswith(("=", "+", "-", "@", "\t", "\r")) else value

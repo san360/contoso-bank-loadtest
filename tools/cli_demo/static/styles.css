@@ -78,7 +78,14 @@ details pre { color:var(--ink); background:var(--bg); padding:10px; border-radiu
 table { border-collapse:collapse; width:100%; font-size:12px; text-align:left; }
 th,td { border-bottom:1px solid var(--line); padding:8px 10px; white-space:nowrap; }
 th { color:var(--muted); background:#f7f9fc; position:sticky; top:0; }
-#metric-chart { width:100%; height:150px; background:#f5f9ff; border-radius:7px; margin-top:12px; }
+#metric-chart, .metric-sparkline { width:100%; height:150px; background:#f5f9ff; border-radius:7px; margin-top:12px; }
+.client-metric-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
+.client-metric-card { border:1px solid var(--line); border-radius:8px; padding:16px; min-width:0; }
+.client-metric-card h3 { margin:0; }
+.client-metric-card .metric-value { font-size:28px; font-weight:650; line-height:1.25; margin:12px 0 3px; }
+.client-metric-card .metric-unit { font-size:12px; font-weight:400; color:var(--muted); margin-left:7px; }
+.client-metric-card .metric-empty { padding:22px 0; color:var(--muted); }
+.client-metric-card .metric-sparkline { height:100px; }
 .file-list { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0; }
 .file-link { display:inline-block; text-decoration:none; border:1px solid var(--line); border-radius:5px; padding:6px 9px; background:white; font-size:12px; overflow-wrap:anywhere; }
 .bundle-link { border-color:#9abbe9; background:#edf4ff; font-weight:600; }
@@ -90,4 +97,4 @@ th { color:var(--muted); background:#f7f9fc; position:sticky; top:0; }
 footer { max-width:1480px; margin:24px auto; padding:0 28px 22px; color:var(--muted); font-size:11px; }
 @media (min-width:1250px) { .configuration { position:sticky; top:20px; } }
 @media (max-width:960px) { .layout { grid-template-columns:260px minmax(0,1fr); gap:16px; padding:0 16px; } .action-grid { grid-template-columns:1fr; } .topbar { padding:18px; } .skill-grid { grid-template-columns:1fr; } }
-@media (max-width:700px) { .layout { display:block; } .configuration { margin-bottom:20px; } .topbar { gap:10px; } h1 { font-size:17px; } h1 span { display:block; margin:0; font-size:13px; } .local-badge { font-size:9px; } .field-row { grid-template-columns:1fr; gap:0; } .watch-row { align-items:start; flex-direction:column; } .panel { padding:16px; } .stage-heading h2 { font-size:21px; } }
+@media (max-width:700px) { .layout { display:block; } .configuration { margin-bottom:20px; } .topbar { gap:10px; } h1 { font-size:17px; } h1 span { display:block; margin:0; font-size:13px; } .local-badge { font-size:9px; } .field-row { grid-template-columns:1fr; gap:0; } .watch-row { align-items:start; flex-direction:column; } .panel { padding:16px; } .stage-heading h2 { font-size:21px; } .client-metric-grid { grid-template-columns:1fr; } }

@@ -37,6 +37,18 @@ RUN = {
     "artifacts": {"url": "https://example.invalid/results.zip?sv=1&sig=supersecret"},
     "testRunStatistics": {"HealthCheck": {"sampleCount": 20, "meanResTime": 10, "errorPct": 0}},
 }
+CLIENT_DEFINITIONS = {"value": [
+    {"name": "VirtualUsers", "namespace": "LoadTestRunMetrics", "unit": "Count"},
+    {"name": "ResponseTime", "namespace": "LoadTestRunMetrics", "unit": "Milliseconds"},
+    {"name": "TotalRequests", "namespace": "LoadTestRunMetrics", "unit": "Count"},
+    {"name": "Errors", "namespace": "LoadTestRunMetrics", "unit": "Count"},
+]}
+ALL_CLIENT_METRICS = {
+    "VirtualUsers": [{"data": [{"timestamp": CONFIG.startTime, "value": 5}]}],
+    "ResponseTime": [{"data": [{"timestamp": CONFIG.startTime, "value": 10}]}],
+    "TotalRequests": [{"data": [{"timestamp": CONFIG.startTime, "value": 20}]}],
+    "Errors": [{"data": []}],
+}
 
 
 def fake_runner(command):
@@ -52,6 +64,10 @@ def fake_runner(command):
         data = None
     elif command.artifact == "run.json":
         data = RUN
+    elif command.artifact == "client-definitions.json":
+        data = CLIENT_DEFINITIONS
+    elif command.artifact == "all-client-metrics.json":
+        data = ALL_CLIENT_METRICS
     elif command.metric:
         data = [{"data": [{"timestamp": "2026-10-19T10:00:00Z", "value": 10}]}]
     else:
@@ -108,6 +124,14 @@ class CommandTests(unittest.TestCase):
     def test_account_check_shows_actual_active_context(self):
         command = build_commands("account", CONFIG, Path("output"))[0]
         self.assertNotIn("--subscription", command.args)
+
+    def test_all_client_metrics_plan_reads_metadata_definitions_and_unfiltered_values(self):
+        commands = build_commands("all-client-metrics", CONFIG, Path("output"))
+        self.assertEqual([command.artifact for command in commands],
+                         ["run.json", "client-definitions.json", "all-client-metrics.json"])
+        self.assertNotIn("--metric-name", commands[-1].args)
+        self.assertEqual(commands[-1].namespace, "LoadTestRunMetrics")
+        self.assertFalse(any(command.download for command in commands))
 
     def test_small_test_is_fixed_and_target_is_one_argument(self):
         args = build_commands("create-test", CONFIG, Path("output"))[0].args
@@ -210,6 +234,37 @@ class CommandTests(unittest.TestCase):
 
 
 class ExportTests(unittest.TestCase):
+    def test_all_client_metric_map_retains_names_and_units(self):
+        rows = metric_rows(ALL_CLIENT_METRICS, namespace="LoadTestRunMetrics", definitions=CLIENT_DEFINITIONS)
+        self.assertEqual({row["metric"] for row in rows}, {"VirtualUsers", "ResponseTime", "TotalRequests"})
+        response = next(row for row in rows if row["metric"] == "ResponseTime")
+        self.assertEqual(response["unit"], "Milliseconds")
+        self.assertEqual(response["namespace"], "LoadTestRunMetrics")
+        self.assertFalse(any(row["metric"] == "Errors" for row in rows))
+
+    def test_all_client_metric_csv_exports_every_populated_series(self):
+        rows = list(csv.DictReader(io.StringIO(csv_export(
+            ALL_CLIENT_METRICS, namespace="LoadTestRunMetrics", definitions=CLIENT_DEFINITIONS))))
+        self.assertEqual(len(rows), 3)
+        self.assertEqual({row["metric"] for row in rows}, {"VirtualUsers", "ResponseTime", "TotalRequests"})
+        self.assertEqual(next(row for row in rows if row["metric"] == "ResponseTime")["unit"], "Milliseconds")
+
+    def test_all_client_metric_export_retains_zero_and_dimensions(self):
+        data = {"Errors": [{"dimensions": {"RequestName": "HealthCheck"},
+                            "data": [{"timestamp": CONFIG.startTime, "value": 0},
+                                     {"timestamp": CONFIG.endTime, "value": None}]}]}
+        rows = metric_rows(data, namespace="LoadTestRunMetrics", definitions=CLIENT_DEFINITIONS)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["value"], 0)
+        self.assertEqual(rows[0]["unit"], "Count")
+        self.assertIn("HealthCheck", rows[0]["dimensions"])
+
+    def test_all_client_metric_names_work_without_definition_metadata(self):
+        rows = metric_rows({"NewMetric": [{"data": [{"timestamp": CONFIG.startTime, "value": 7}]}]},
+                           namespace="LoadTestRunMetrics")
+        self.assertEqual(rows[0]["metric"], "NewMetric")
+        self.assertEqual(rows[0]["unit"], "")
+
     def test_actual_load_cli_response_shape_keeps_metric_context(self):
         data = [{"data": [{"timestamp": "2026-10-19T10:00:00Z", "value": 122}]}]
         rows = list(csv.DictReader(io.StringIO(csv_export(data, "ResponseTime", "LoadTestRunMetrics"))))
@@ -277,6 +332,54 @@ class JobTests(unittest.TestCase):
         self.assertFalse(Path(preview["artifactDirectory"]).exists())
         with self.assertRaisesRegex(ValueError, "Confirm"):
             self.app.start(preview["id"], False)
+
+    def test_all_client_metric_job_persists_raw_empty_series_and_labeled_exports(self):
+        preview = self.app.preview("all-client-metrics", asdict(CONFIG))
+        self.app.start(preview["id"], False)
+        job = wait_job(self.app, preview["id"])
+        self.assertEqual(job["state"], "succeeded", job["error"])
+        entry = next(item for item in job["commands"] if item["artifact"] == "all-client-metrics.json")
+        self.assertEqual(entry["data"]["Errors"], [{"data": []}])
+        self.assertEqual(len(entry["metricRows"]), 3)
+        self.assertEqual({row["unit"] for row in entry["metricRows"]}, {"Count", "Milliseconds"})
+        names = {file["name"] for file in job["files"]}
+        self.assertTrue({"run.json", "client-definitions.json", "all-client-metrics.json",
+                         "all-client-metrics.csv"}.issubset(names))
+
+    def test_all_client_metric_job_rejects_a_run_from_another_test(self):
+        preview = self.app.preview("all-client-metrics", asdict(replace(CONFIG, testId="another-test")))
+        self.app.start(preview["id"], False)
+        job = wait_job(self.app, preview["id"])
+        self.assertEqual(job["state"], "failed")
+        self.assertIn("does not belong", job["error"])
+        self.assertEqual(len(job["commands"]), 1)
+
+    def test_all_client_metric_job_warns_when_no_points_are_available(self):
+        def empty_metrics(command):
+            if command.artifact == "all-client-metrics.json":
+                return subprocess.CompletedProcess(command.args, 0, "{}", "")
+            return fake_runner(command)
+
+        with patch.object(self.app, "runner", side_effect=empty_metrics):
+            preview = self.app.preview("all-client-metrics", asdict(CONFIG))
+            self.app.start(preview["id"], False)
+            job = wait_job(self.app, preview["id"])
+        self.assertEqual(job["state"], "succeeded", job["error"])
+        self.assertTrue(job["warnings"])
+        self.assertEqual(job["commands"][-1]["metricRows"], [])
+
+    def test_all_client_metric_request_failure_is_explicit(self):
+        def failed_metrics(command):
+            if command.artifact == "all-client-metrics.json":
+                return subprocess.CompletedProcess(command.args, 3, "", "Metric query denied")
+            return fake_runner(command)
+
+        with patch.object(self.app, "runner", side_effect=failed_metrics):
+            preview = self.app.preview("all-client-metrics", asdict(CONFIG))
+            self.app.start(preview["id"], False)
+            job = wait_job(self.app, preview["id"])
+        self.assertEqual(job["state"], "failed")
+        self.assertIn("Metric query denied", job["commands"][-1]["stderr"])
 
     def test_preview_runs_once_and_persists_artifacts(self):
         preview = self.app.preview("collect-evidence", asdict(CONFIG))

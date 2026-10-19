@@ -224,11 +224,28 @@ rules. It is not free just because it runs for one minute.
 
 ### 4. Show client, engine and server values
 
-On **Client & engine**, discover namespaces and metric definitions, then fetch a
-named metric such as `ResponseTime`. The UI displays a chart/table and saves both
-the JSON response and a flattened CSV. One-minute buckets, dimensions, units when
-returned, timestamps and aggregation names are retained. Empty datapoints are
-reported as missing, not zero.
+On **Client & engine**, use **Load runs** beside the left-hand run selector to
+preview/list executions for the selected test, then choose a run. Preview and
+execute **Get all client metrics** to read the run metadata, discover definitions,
+and fetch the complete `LoadTestRunMetrics` namespace without a metric-name filter.
+The app checks that the run belongs to the configured test ID.
+
+The tab displays a separate named chart/card for every available client metric.
+For the included JMX demo these are **Virtual Users**, **Response Time**, **Total
+Requests**, and **Errors**. Metrics with empty series remain visible as **No
+datapoints returned**, not invented zeros. Each populated card shows the latest
+bucket value and its unit, with expandable datapoints/dimensions. Values use
+CLI/service-default aggregations and one-minute buckets; a latest bucket value is
+not a whole-run total.
+
+The overview has direct **JSON/CSV download** links. JSON preserves named empty
+series; CSV contains all returned datapoints with their metric names and units.
+Changing the selected test/run clears the previous overview, and an in-flight
+response cannot overwrite results for a newly selected scope.
+
+**Get one client metric** still fetches a named metric such as `ResponseTime`,
+while **Get engine health** remains separate. Both keep the existing single-series
+chart/table and JSON/CSV exports.
 
 On **Server metrics**, use the start/end timestamps populated by **Inspect run**
 to fetch application values over the same window. Discovery shows valid metric
@@ -364,6 +381,11 @@ $run = az load test-run show @scope --test-run-id $runId --output json |
   ConvertFrom-Json
 if ($LASTEXITCODE -ne 0 -or -not $run.endDateTime) { throw "Inspect a finished run first." }
 
+# All available client metrics, keyed by metric name:
+az load test-run metrics list @scope --test-run-id $runId `
+  --metric-namespace LoadTestRunMetrics --interval PT1M
+
+# Or fetch only a named client metric:
 az load test-run metrics list @scope --test-run-id $runId `
   --metric-namespace LoadTestRunMetrics --metric-name ResponseTime --interval PT1M
 

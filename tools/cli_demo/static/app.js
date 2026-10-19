@@ -73,6 +73,7 @@ function invalidate() {
   $("command-label").textContent = "Configuration changed - preview a step again";
   $("run-summary").hidden = true;
   $("metric-panel").hidden = true;
+  $("client-overview").hidden = true;
   updateExecute();
 }
 
@@ -257,12 +258,21 @@ function renderMetrics(rows) {
   $("metric-table").replaceChildren(table(["Timestamp", "Namespace", "Metric", "Aggregation", "Value", "Unit"],
     rows.slice(0, 200).map((row) => [row.timestamp, row.namespace, row.metric, row.aggregation, row.value, row.unit])));
   const svg = $("metric-chart");
-  svg.replaceChildren();
-  if (!rows.length) return;
+  drawMetricChart(svg, rows);
+}
+
+function firstMetricSeries(rows) {
+  if (!rows.length) return [];
   const first = rows[0];
-  const points = rows.filter((row) => row.metric === first.metric && row.dimensions === first.dimensions
-    && row.aggregation === first.aggregation && Number.isFinite(Number(row.value)))
-    .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  return rows.filter((row) => row.metric === first.metric && row.dimensions === first.dimensions
+    && row.aggregation === first.aggregation && row.value !== null && row.value !== ""
+    && Number.isFinite(Number(row.value)) && Number.isFinite(Date.parse(row.timestamp)))
+    .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp));
+}
+
+function drawMetricChart(svg, rows) {
+  svg.replaceChildren();
+  const points = firstMetricSeries(rows);
   if (!points.length) return;
   const values = points.map((row) => Number(row.value));
   const low = Math.min(0, ...values);
@@ -281,6 +291,102 @@ function renderMetrics(rows) {
   marker.setAttribute("r", "3");
   marker.setAttribute("fill", "#075bd8");
   svg.append(path, marker);
+}
+
+function prepareClientOverview(snapshot) {
+  $("client-overview").hidden = false;
+  $("client-metric-count").textContent = "LOADING";
+  $("client-metric-scope").textContent = `${snapshot.loadTestResource} | Test: ${snapshot.testId} | Run: ${snapshot.runId}`;
+  $("client-metric-status").textContent = "Fetching run metadata, metric definitions and all client metric values...";
+  $("client-metric-grid").replaceChildren();
+  $("client-metric-downloads").replaceChildren();
+}
+
+function renderClientOverview(job, snapshot) {
+  prepareClientOverview(snapshot);
+  if (job.state !== "succeeded") {
+    $("client-metric-count").textContent = "UNAVAILABLE";
+    $("client-metric-status").textContent = job.error || "The client metrics request did not complete.";
+    return;
+  }
+  const definitionEntry = job.commands.find((entry) => entry.artifact === "client-definitions.json");
+  const metricEntry = job.commands.find((entry) => entry.artifact === "all-client-metrics.json");
+  const definitions = new Map();
+  arrayOf(definitionEntry?.data).forEach((item) => {
+    const name = typeof item === "string" ? item : (item.name?.value || item.name);
+    if (typeof name === "string" && name) definitions.set(name, typeof item === "string" ? {} : item);
+  });
+  const payload = metricEntry?.data;
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    Object.keys(payload).forEach((name) => { if (!definitions.has(name)) definitions.set(name, {}); });
+  }
+  $("client-metric-count").textContent = `${definitions.size} METRICS`;
+  $("client-metric-status").textContent = definitions.size
+    ? "All available client metrics for this run. Charts show the first returned series; expand details for every datapoint."
+    : "No client metric definitions or series were returned for this run.";
+  const rows = metricEntry?.metricRows || [];
+  definitions.forEach((definition, name) => {
+    const metricRows = rows.filter((row) => row.metric === name);
+    const points = firstMetricSeries(metricRows);
+    const latest = points.at(-1);
+    const card = document.createElement("article");
+    card.className = "client-metric-card";
+    card.dataset.clientMetric = name;
+    const heading = document.createElement("h3");
+    heading.textContent = name.replace(/([a-z])([A-Z])/g, "$1 $2");
+    const description = document.createElement("p");
+    description.className = "hint";
+    description.textContent = definition.description || name;
+    const value = document.createElement("div");
+    value.className = latest ? "metric-value" : "metric-empty";
+    value.textContent = latest ? Number(latest.value).toLocaleString(undefined, { maximumFractionDigits: 3 })
+      : "No datapoints returned";
+    const unit = document.createElement("span");
+    unit.className = "metric-unit";
+    unit.textContent = latest?.unit || definition.unit || "";
+    value.append(unit);
+    const caption = document.createElement("p");
+    caption.className = "hint";
+    caption.textContent = latest ? `Latest bucket: ${latest.timestamp} | ${metricRows.length} datapoints`
+      : "Missing data is not assumed to be zero. Check run state, ingestion delay and retention.";
+    card.append(heading, description, value, caption);
+    if (latest) {
+      const chart = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      chart.classList.add("metric-sparkline");
+      chart.setAttribute("viewBox", "0 0 700 140");
+      chart.setAttribute("role", "img");
+      chart.setAttribute("aria-label", `${name} first returned series over time`);
+      drawMetricChart(chart, metricRows);
+      card.append(chart);
+    }
+    if (metricRows.length) {
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = `View datapoints (${metricRows.length})`;
+      const wrapper = document.createElement("div");
+      wrapper.className = "table-scroll";
+      wrapper.append(table(["Timestamp", "Value", "Unit", "Dimensions"],
+        metricRows.slice(0, 200).map((row) => [row.timestamp, row.value, row.unit, row.dimensions || "Run-wide"])));
+      details.append(summary, wrapper);
+      if (metricRows.length > 200) {
+        const note = document.createElement("p");
+        note.className = "hint";
+        note.textContent = "Showing the first 200 datapoints; the JSON/CSV downloads contain all returned datapoints.";
+        details.append(note);
+      }
+      card.append(details);
+    }
+    $("client-metric-grid").append(card);
+  });
+  for (const name of ["all-client-metrics.json", "all-client-metrics.csv"]) {
+    const file = job.files.find((item) => item.name === name);
+    if (!file) continue;
+    const link = document.createElement("a");
+    link.className = "file-link";
+    link.href = file.url;
+    link.textContent = name.endsWith(".json") ? "Download all metrics JSON" : "Download all datapoints CSV";
+    $("client-metric-downloads").append(link);
+  }
 }
 
 function filesFor(job, target) {
@@ -332,6 +438,10 @@ async function executePlan(duringWatch = false) {
   busy = true;
   updateExecute();
   notify("", true);
+  if (selected.action === "all-client-metrics") {
+    prepareClientOverview(JSON.parse(scope));
+    $("metric-panel").hidden = true;
+  }
   try {
     const started = await api("/api/jobs", { planId: selected.id, confirmed: $("confirmation").checked });
     let job;
@@ -341,9 +451,13 @@ async function executePlan(duringWatch = false) {
       if (["queued", "running"].includes(job.state)) await new Promise((resolve) => setTimeout(resolve, 1000));
     } while (["queued", "running"].includes(job.state));
     if (job.action === "collect-evidence") lastEvidenceJob = { job, key: selectedRun };
-    if (JSON.stringify(config) === scope) fillFromResult(job);
-    else notify("These results belong to the previous configuration; automatic field updates were skipped.");
-    job.commands.forEach((entry) => { if (entry.metricRows) renderMetrics(entry.metricRows); });
+    if (JSON.stringify(config) === scope) {
+      if (job.action !== "all-client-metrics" || job.state === "succeeded") fillFromResult(job);
+      if (job.action === "all-client-metrics") {
+        renderClientOverview(job, JSON.parse(scope));
+        if (!$("tab-metrics").hidden) $("client-overview").scrollIntoView({ behavior: "smooth", block: "start" });
+      } else job.commands.forEach((entry) => { if (entry.metricRows) renderMetrics(entry.metricRows); });
+    } else notify("These results belong to the previous configuration; automatic field and metric updates were skipped.");
     if (job.error) notify(job.error, true);
     if (job.warnings.length) notify(job.warnings.join(" "));
     return job;
@@ -497,6 +611,7 @@ async function bootstrap() {
     notify("Browser configuration reset. Downloaded artifacts were not deleted.");
   });
   $("confirmation").addEventListener("change", updateExecute);
+  $("load-run-list").addEventListener("click", handle(() => previewAction("list-runs")));
   $("shell").addEventListener("change", renderCommand);
   $("execute").addEventListener("click", handle(() => executePlan()));
   $("watch-run").addEventListener("click", handle(watchRun));
