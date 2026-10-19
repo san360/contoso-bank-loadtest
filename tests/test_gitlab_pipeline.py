@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.gitlab_demo.common import DemoError, contract_digest, https_origin, write_json
-from tools.gitlab_demo.controller import gate_evidence
+from tools.gitlab_demo.controller import gate_evidence, wait_merge_status
 from tools.gitlab_demo.pipeline import check_mr, feature_name, functional_digest, render_test, verify_candidate
 
 
@@ -119,6 +119,32 @@ class GitLabPipelineTests(unittest.TestCase):
             Context.client.branch_sha = "c" * 40
             with self.assertRaises(DemoError):
                 check_mr(Context())
+
+    def test_merge_cache_can_catch_up_without_accepting_another_pipeline(self):
+        source = "a" * 40
+        pipeline = {"id": 42, "sha": source, "status": "success"}
+
+        class Client:
+            reads = 0
+            head_id = 42
+
+            def get(self, suffix):
+                if suffix.startswith("/repository/branches/"):
+                    return {"commit": {"id": source}}
+                statuses = ["ci_must_pass", "checking", "mergeable"]
+                status = statuses[min(self.reads, 2)]
+                self.reads += 1
+                return {
+                    "state": "opened", "sha": source, "detailed_merge_status": status,
+                    "head_pipeline": {"id": self.head_id, "status": "success"},
+                }
+
+        client = Client()
+        with patch("tools.gitlab_demo.controller.time.sleep"):
+            self.assertEqual(wait_merge_status(client, 7, pipeline, "mergeable")["sha"], source)
+            client.head_id = 43
+            with self.assertRaises(DemoError):
+                wait_merge_status(client, 7, pipeline, "mergeable")
 
 
 if __name__ == "__main__":

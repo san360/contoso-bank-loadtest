@@ -147,6 +147,29 @@ def note(client: GitLab, iid: int, body: str) -> None:
     client.request("POST", f"{client.project}/merge_requests/{iid}/notes", {"body": body})
 
 
+def wait_merge_status(client: GitLab, iid: int, pipeline: dict, expected: str) -> dict:
+    deadline = time.monotonic() + 120
+    transient = {"checking", "unchecked", "ci_still_running", "ci_must_pass", "mergeable"}
+    while time.monotonic() < deadline:
+        mr = client.get(f"/merge_requests/{iid}?with_merge_status_recheck=true")
+        branch = client.get(
+            f"/repository/branches/{urllib.parse.quote(DEMO_BRANCH, safe='')}"
+        )
+        head = mr.get("head_pipeline") or {}
+        if (
+            mr["state"] != "opened" or branch["commit"]["id"] != pipeline["sha"]
+            or head.get("id") != pipeline["id"] or head.get("status") != pipeline["status"]
+        ):
+            raise DemoError("The source or latest completed MR pipeline changed during merge checks")
+        status = mr.get("detailed_merge_status")
+        if status == expected and mr["sha"] == pipeline["sha"]:
+            return mr
+        if status not in transient:
+            raise DemoError(f"Unexpected GitLab merge blocker: {status}")
+        time.sleep(5)
+    raise DemoError(f"GitLab merge checks did not settle to {expected} within 120 seconds")
+
+
 def execute(folder: Path) -> dict:
     config = read_json(folder / "gitlab.json")
     credentials = read_json(folder / "secrets.json")
@@ -206,9 +229,7 @@ def execute(folder: Path) -> dict:
             before["fresh_measurement"] = verify_measurement(config, before, expect_red=True)
             report.update(status="expected_regression_verified", before=before)
             write_json(report_path, report)
-            mr = client.get(f"/merge_requests/{iid}")
-            if mr.get("detailed_merge_status") != "ci_must_pass":
-                raise DemoError(f"GitLab did not show the red pipeline as a merge blocker: {mr.get('detailed_merge_status')}")
+            wait_merge_status(client, iid, red_pipeline, "ci_must_pass")
             note(client, iid, (
                 f"**Measured regression (scripted demo):** source `{red_sha}`, "
                 f"pipeline [{red_pipeline['id']}]({red_pipeline['web_url']}), "
@@ -243,16 +264,7 @@ def execute(folder: Path) -> dict:
                 "profile/criteria hashes match the red run. Fast-forward merge and "
                 "promotion of this exact tested slot follow; no rebuild."
             ))
-            deadline = time.monotonic() + 120
-            while time.monotonic() < deadline:
-                mr = client.get(f"/merge_requests/{iid}")
-                if mr.get("detailed_merge_status") == "mergeable":
-                    break
-                if mr.get("detailed_merge_status") not in {"checking", "unchecked", "ci_still_running"}:
-                    raise DemoError(f"Green MR is not mergeable: {mr.get('detailed_merge_status')}")
-                time.sleep(5)
-            else:
-                raise DemoError("GitLab did not settle the green mergeability checks")
+            mr = wait_merge_status(client, iid, green_pipeline, "mergeable")
             if (
                 mr["sha"] != green_sha or (mr.get("head_pipeline") or {}).get("id") != green_pipeline["id"]
                 or client.get("/repository/branches/main")["commit"]["id"] != base
