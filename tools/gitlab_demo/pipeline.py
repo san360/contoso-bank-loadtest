@@ -267,6 +267,8 @@ def finish(context: Context, code: int) -> int:
     path = EVIDENCE / "summary.json"
     summary = read_json(path) if path.exists() else {"source_sha": context.source_sha, "job_id": context.job_id}
     try:
+        if not (EVIDENCE / "run.json").exists():
+            raise DemoError("A native CLI preparation command failed before measured run evidence; see its preceding console error")
         payload = read_json(EVIDENCE / "run.json")
         verdict = evaluate(payload)
         if code != verdict.exit_code or (EVIDENCE / "download-failed").exists():

@@ -2,7 +2,7 @@
 def finite: if type == "number" then (isnan | not) and (isinfinite | not) else false end;
 def verdict($outcome; $reason): {outcome:$outcome,reason:$reason};
 if .status != "DONE" then
-  .status as $status | if (["FAILED","CANCELLED","CANCELED","STOPPED"] | index($status)) then
+  .status as $status | if (["FAILED","VALIDATION_FAILURE","CANCELLED","CANCELED","STOPPED"] | index($status)) then
     verdict("unjudgeable"; "Run did not complete")
   else verdict("pending"; "Waiting for DONE") end
 else

@@ -43,6 +43,7 @@ functional_tests:
     - jq -f loadtests/gitlab-demo/verdict.jq tests/fixtures/gitlab-alt-historical-red.json | jq -e '.outcome=="performance_failed" and .p95_ms==1250 and .error_pct==0'
     - jq '.testResult="NOT_APPLICABLE"' tests/fixtures/gitlab-alt-historical-red.json | jq -f loadtests/gitlab-demo/verdict.jq | jq -e '.outcome=="pending"'
     - jq '.status="CANCELLED"' tests/fixtures/gitlab-alt-historical-red.json | jq -f loadtests/gitlab-demo/verdict.jq | jq -e '.outcome=="unjudgeable"'
+    - jq '.status="VALIDATION_FAILURE"' tests/fixtures/gitlab-alt-historical-red.json | jq -f loadtests/gitlab-demo/verdict.jq | jq -e '.outcome=="unjudgeable"'
     - jq 'del(.passFailCriteria)' tests/fixtures/gitlab-alt-historical-red.json | jq -f loadtests/gitlab-demo/verdict.jq | jq -e '.outcome=="unjudgeable"'
     - jq '.testRunStatistics.Total.pct2ResTime=200' tests/fixtures/gitlab-alt-historical-red.json | jq -f loadtests/gitlab-demo/verdict.jq | jq -e '.outcome=="unjudgeable"'
 
@@ -101,7 +102,8 @@ performance_gate:
       echo "\$ az load test $operation --test-id $TEST_ID --load-test-config-file demo-evidence/input/transactions.yaml"
       az load test "$operation" --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
         --test-id "$TEST_ID" --load-test-config-file demo-evidence/input/transactions.yaml \
-        --metrics-reference-id None --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o none
+        --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o none
+    - az load test show --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --query '{testId:testId,metricsReferenceIdentityType:metricsReferenceIdentityType,criteria:passFailCriteria}' --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json
     - echo "=== Monitor the ACTUAL staging slot and SHARED S1 plan ==="
     - |
       az load test app-component add --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
@@ -273,6 +275,9 @@ cli_walkthrough:
     - |
       mkdir -p demo-evidence/input
       RUN_ID="cli-$CI_PIPELINE_ID-$CI_JOB_ID"; OUTCOME=infrastructure_failed; CLI_EXIT=2
+      safe_text() {
+        sed -E -e 's#(https?://[^ ?"]+)\?[^ "]+#\1?[REDACTED]#g' -e '/[Aa]uthorization|[Pp]rivate-[Tt]oken|[Aa]ccess_[Tt]oken|IDENTITY_HEADER|MSI_SECRET/c\[REDACTED HEADER]' "$1" | sed -n "1,${2:-12}p"
+      }
       trap 'code=$?; trap - EXIT; jq -n --arg outcome "$OUTCOME" --arg run "$RUN_ID" --arg sha "${DEPLOYED_SHA:-unproven}" --argjson exit_code "$code" "{outcome:\$outcome,alt_run_id:\$run,deployed_source_sha:\$sha,exit_code:\$exit_code}" > demo-evidence/summary.json; exit "$code"' EXIT
     - echo "=== 1 Login using managed identity (isolated job profile only) ==="
     - az login --identity --client-id "$AZURE_CLIENT_ID" --allow-no-subscriptions --only-show-errors -o none
@@ -295,12 +300,13 @@ cli_walkthrough:
       elif [ "$count" = 0 ]; then operation=create
       else echo "Unexpected inventory; stopping"; exit 2; fi
       echo "\$ az load test $operation --load-test-config-file demo-evidence/input/transactions.yaml"
-      az load test "$operation" --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --load-test-config-file demo-evidence/input/transactions.yaml --metrics-reference-id None --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o none
+      az load test "$operation" --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --load-test-config-file demo-evidence/input/transactions.yaml --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o none
+    - az load test show --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --query '{testId:testId,metricsReferenceIdentityType:metricsReferenceIdentityType,criteria:passFailCriteria}' --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json
     - echo "=== 4 Monitored components and metric DEFINITIONS (not samples) ==="
     - az load test app-component list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --subscription "$AZURE_SUBSCRIPTION_ID" -o json | tee demo-evidence/app-components.json
     - az load test server-metric list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --subscription "$AZURE_SUBSCRIPTION_ID" -o json | tee demo-evidence/server-metric-definitions.json
     - |
-      jq -e --arg staging "$STAGING_RESOURCE_ID" --arg plan "$APP_SERVICE_PLAN_ID" '.components|has($staging) and has($plan)' demo-evidence/app-components.json
+      jq -e --arg staging "$STAGING_RESOURCE_ID" --arg plan "$APP_SERVICE_PLAN_ID" '.components|with_entries(.key|=ascii_downcase)|has($staging|ascii_downcase) and has($plan|ascii_downcase)' demo-evidence/app-components.json
       jq -e '.metrics|length==7' demo-evidence/server-metric-definitions.json
       if [ "$count" = 1 ]; then
         diff <(jq -S '.components' demo-evidence/components-before.json) <(jq -S '.components' demo-evidence/app-components.json)
@@ -326,7 +332,12 @@ cli_walkthrough:
       echo "=== Actual settled client statistics and criteria ==="
       cat demo-evidence/verdict.json
     - echo "=== 6 Download results, engine logs and report ==="
-    - az load test-run download-files --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-run-id "$RUN_ID" --path demo-evidence/downloads --result --log --report --force --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o none 2> .download-error
+    - |
+      if ! az load test-run download-files --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-run-id "$RUN_ID" --path demo-evidence/downloads --result --log --report --force --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o none 2> .download-error; then
+        echo "Required result/log/report download failed"
+        safe_text .download-error
+        exit 2
+      fi
     - |
       echo "=== Bounded SANITIZED ENGINE LOG excerpt ==="
       archive=$(find demo-evidence/downloads -iname '*log*.zip' -print -quit)
@@ -334,7 +345,7 @@ cli_walkthrough:
       member=$(unzip -Z1 "$archive" | sed -n '/\.log$/ {p;q;}')
       test -n "$member"
       unzip -p "$archive" "$member" > .engine-log
-      sed -E -e 's#(https?://[^ ?"]+)\?[^ "]+#\1?[REDACTED]#g' -e '/[Aa]uthorization|[Pp]rivate-[Tt]oken|[Aa]ccess_[Tt]oken|IDENTITY_HEADER|MSI_SECRET/c\[REDACTED HEADER]' .engine-log | sed -n '1,40p'
+      safe_text .engine-log 40
       rm -f .engine-log .download-error
     - echo "=== 7 Native CLIENT metric time series ==="
     - az load test-run metrics list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-run-id "$RUN_ID" --metric-namespace LoadTestRunMetrics --interval PT10S --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > demo-evidence/client-metric-series.json
@@ -353,14 +364,14 @@ cli_walkthrough:
           file="demo-evidence/server-metrics-$scope-$aggregate.json"
           if az monitor metrics list --resource "$id" --metric $names --aggregation "$aggregate" --interval PT1M --start-time "$from" --end-time "$until" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > "$file" 2> .telemetry-error; then
             jq '{metrics:[.value[]|{name:.name.value,unit:.unit}],non_null_points:([.value[].timeseries[].data[]|select(.average!=null or .total!=null)]|length),first_points:([.value[].timeseries[].data[]|select(.average!=null or .total!=null)][0:6])}' "$file"
-          else rm -f "$file"; echo "Server samples unavailable for $scope/$aggregate (not invented)"; fi
+          else rm -f "$file"; echo "Server samples unavailable for $scope/$aggregate (not invented)"; safe_text .telemetry-error; fi
         done
       done
       echo '$ az monitor log-analytics query (deployed staging SHA, not this pipeline commit)'
       kql="AppServiceConsoleLogs | where TimeGenerated between(datetime($from) .. datetime($until)) | where _ResourceId =~ '$STAGING_RESOURCE_ID' | extend request=parse_json(ResultDescription) | where tostring(request.source_sha) == '$DEPLOYED_SHA' | project TimeGenerated, request | take 100"
       if az monitor log-analytics query --workspace "$LOG_WORKSPACE_ID" --analytics-query "$kql" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > demo-evidence/staging-console-logs.json 2> .telemetry-error; then
         jq '{actual_row_count:length,first_rows:.[0:5]}' demo-evidence/staging-console-logs.json
-      else rm -f demo-evidence/staging-console-logs.json; echo "App logs unavailable/still ingesting; no rows invented"; fi
+      else rm -f demo-evidence/staging-console-logs.json; echo "App logs unavailable/still ingesting; no rows invented"; safe_text .telemetry-error; fi
       rm -f .telemetry-error
     - curl --fail --silent --show-error "$STAGING_URL/version" > demo-evidence/deployed-version-after.json
     - |

@@ -6,6 +6,14 @@ commands**: only Azure CLI, Bash, jq, curl, unzip and sed. It targets the alread
 prepared staging app, with no application redeploy/reset/promotion. API validation
 uses `DEMO_CLI_WALKTHROUGH=true`; that mode is mutually exclusive with promotion.
 Correlation uses the actual staging `/version` SHA, not the pipeline commit.
+Prerequisite: the test/SUT is already prepared with the actual staging slot,
+shared plan and seven monitoring definitions (the advanced MR path configures
+these). The walkthrough verifies they survive upsert; a first-ever test creation
+does not magically create those bindings and will fail the prerequisite check
+until monitoring is prepared.
+The existing ALT system-assigned monitoring identity is retained and shown.
+Load 2.1's `--metrics-reference-id None` validator rejects that documented
+sentinel, so the walkthrough does not send it or use a hidden REST workaround.
 
 Open [`.gitlab-ci.yml`](../.gitlab-ci.yml), then the `cli_walkthrough` log.
 Azure operations are ordinary `az` commands in separate script entries, with

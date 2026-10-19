@@ -250,6 +250,8 @@ class GitLabPipelineTests(unittest.TestCase):
         self.assertEqual((verdict.samples, verdict.p95_ms, verdict.error_pct), (911, 1250, 0))
         payload["testResult"] = "NOT_APPLICABLE"
         self.assertNotEqual(evaluate(payload).exit_code, 0)
+        payload["status"] = "VALIDATION_FAILURE"
+        self.assertEqual(evaluate(payload).outcome, "unjudgeable")
 
     def test_explicit_resume_rejects_measured_phase_or_a_premature_fix(self):
         import base64

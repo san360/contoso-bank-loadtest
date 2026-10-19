@@ -50,7 +50,7 @@ def run_snapshot(run: dict[str, Any]) -> dict[str, Any]:
 def evaluate(run: dict[str, Any]) -> Verdict:
     status = run.get("status")
     if status != "DONE":
-        terminal = status in {"FAILED", "CANCELLED", "CANCELED", "STOPPED"}
+        terminal = status in {"FAILED", "VALIDATION_FAILURE", "CANCELLED", "CANCELED", "STOPPED"}
         return Verdict(
             "unjudgeable" if terminal else "pending",
             f"Run status is {status!r}, not DONE",
