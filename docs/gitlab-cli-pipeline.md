@@ -1,11 +1,26 @@
 # GitLab: Azure Load Testing with visible Azure CLI commands
 
-Open [`.gitlab-ci.yml`](../.gitlab-ci.yml), then the `performance_gate` job log.
+**Start here:** in GitLab, select **Build > Pipelines > Run pipeline**, choose
+protected `main`, and run. The single **`cli_walkthrough`** job has **zero Python
+commands**: only Azure CLI, Bash, jq, curl, unzip and sed. It targets the already
+prepared staging app, with no application redeploy/reset/promotion. API validation
+uses `DEMO_CLI_WALKTHROUGH=true`; that mode is mutually exclusive with promotion.
+Correlation uses the actual staging `/version` SHA, not the pipeline commit.
+
+Open [`.gitlab-ci.yml`](../.gitlab-ci.yml), then the `cli_walkthrough` log.
 Azure operations are ordinary `az` commands in separate script entries, with
 safe explicit labels inside the few loops. No Python Azure gate/deployment
 wrapper or global shell tracing is used.
 
-The job demonstrates, in order:
+The walkthrough demonstrates native identity login, version-controlled test
+create/update, binding readback, real run/poll/strict jq verdict, downloads and
+sanitized engine log excerpt, client/server samples and correlated KQL logs.
+`loadtests/gitlab-demo/verdict.jq` is a small pure JSON filter, not an Azure
+wrapper. Functional checks exercise it against actual historical red data,
+NOT_APPLICABLE, cancelled, criteria-less and contradictory examples.
+
+**Advanced:** `performance_gate` remains the exact-artifact MR regression path.
+Its Azure operations are also direct native CLI. It additionally demonstrates:
 
 1. `az login --identity`, `az account set` and `az account show`.
 2. `az webapp deploy` of the exact SHA-stamped ZIP to **staging**.
@@ -29,7 +44,7 @@ safe **inside that isolated profile only** and avoids load 2.1's multi-subscript
 resolver bug. Resource commands still supply `--subscription`. Never run an
 equivalent `az account set` in the shared presenter workstation profile.
 
-Python remains for application/tests, exact artifact/functional/contract hashes,
+In the advanced MR path only, Python remains for application/tests, exact artifact/functional/contract hashes,
 private SUT reset/warm-up, GitLab MR/provenance checks, strict local JSON verdict
 interpretation and console redaction. Those helpers make **no Azure calls**.
 One contiguous resource-group lock covers deployment through evidence collection;
@@ -48,6 +63,6 @@ component/definition inventories, client/server metrics, correlated logs,
 downloaded results/engine logs/report and the exact candidate ZIP/manifest.
 Secrets, access tokens, SAS response URLs and raw authorization headers are not
 printed. Runner prerequisites are pinned in its Dockerfile: jq, unzip, load 2.1.0
-and log-analytics 1.0.0b3.
+and log-analytics 1.0.0b3. Its explicit test environment also pins PyYAML 6.0.3.
 
 Reference: [Microsoft's Azure Load Testing CLI CI/CD guide](https://learn.microsoft.com/azure/app-testing/load-testing/how-to-configure-load-test-cicd).

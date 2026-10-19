@@ -226,6 +226,13 @@ class GitLabPipelineTests(unittest.TestCase):
         self.assertIn("set -euo pipefail", document["default"]["before_script"])
         self.assertEqual(document["performance_gate"]["resource_group"], document["promote_tested_slot"]["resource_group"])
         self.assertIn("az webapp deployment slot swap", "\n".join(document["promote_tested_slot"]["script"]))
+        basic = "\n".join(document["cli_walkthrough"]["before_script"] + document["cli_walkthrough"]["script"])
+        self.assertNotIn("python", basic.lower())
+        self.assertNotIn("az webapp deploy", basic)
+        self.assertNotIn("/admin/reset", basic)
+        self.assertIn('DEPLOYED_SHA=$(jq', basic)
+        self.assertIn("verdict.jq", basic)
+        self.assertEqual(document["cli_walkthrough"]["resource_group"], document["performance_gate"]["resource_group"])
 
     def test_console_sanitizer_removes_url_queries_and_private_headers(self):
         result = sanitize("GET https://example.test/log?sv=fixture&sig=private\nAuthorization: Bearer private\nsafe engine started")

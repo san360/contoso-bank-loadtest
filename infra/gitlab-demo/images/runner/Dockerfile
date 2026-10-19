@@ -24,7 +24,7 @@ RUN pip install --no-cache-dir azure-cli==2.89.0 \
     && jq --version \
     && command -v unzip \
     && az monitor log-analytics query --help >/dev/null \
-    && /opt/demo-python/bin/python -c "import fastapi, httpx; print('Runner Python dependencies verified')"
+    && /opt/demo-python/bin/python -c "import fastapi, httpx, yaml; print('Runner Python/test dependencies verified')"
 COPY entrypoint.sh /opt/demo-entrypoint.sh
 COPY configure.py /opt/configure-runner.py
 RUN sed -i 's/\r$//' /opt/demo-entrypoint.sh \

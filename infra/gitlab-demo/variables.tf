@@ -69,7 +69,7 @@ variable "app_admin_token" {
 
 variable "runner_image_tag" {
   type    = string
-  default = "runner:19.4.0-demo-v3"
+  default = "runner:19.4.0-demo-v4"
 }
 
 variable "deploy_gitlab_vm" {

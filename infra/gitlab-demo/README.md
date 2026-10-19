@@ -57,8 +57,10 @@ declarations, NFS data, backup archives, MR history and evidence are retained.
 
 ## What it demonstrates
 
-The Azure path is now **CLI-first**: open `.gitlab-ci.yml` and the
-`performance_gate` console to see direct managed-identity login, candidate
+The Azure path is now **CLI-first**: start with **Run pipeline on protected main**
+and the zero-Python `cli_walkthrough` job. It exercises the prepared staging app
+without redeploy/reset/promotion. The advanced MR `performance_gate` also shows
+direct managed-identity login, candidate
 deployment, load-test upsert/run/read/download, component/metric definitions,
 client/server metrics and correlated Log Analytics queries. Engine logs are
 shown as a bounded sanitized console excerpt, not just hidden in artifacts.
@@ -181,7 +183,7 @@ access path: the VM has no public IP/SSH rule. Never print credential JSON.
 ```powershell
 $resources = Get-Content "$private\resources.json" -Raw | ConvertFrom-Json
 Push-Location infra\gitlab-demo\images\runner
-az acr build --registry $resources.registry --image runner:19.4.0-demo-v3 `
+az acr build --registry $resources.registry --image runner:19.4.0-demo-v4 `
   --platform linux/amd64 --file Dockerfile --subscription $subscription .
 Pop-Location
 az acr import --name $resources.registry --source docker.io/library/nginx:stable-alpine `
