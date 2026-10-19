@@ -9,8 +9,7 @@ from unittest.mock import Mock, patch
 
 from tools.gitlab_demo.common import DemoError, contract_digest, https_origin, write_json
 from tools.gitlab_demo.controller import file_at, gate_evidence, resume_context, wait_merge_status
-from tools.gitlab_demo.pipeline import check_mr, feature_name, functional_digest, render_test, upsert_test, verify_candidate
-from tools.gitlab_demo.azure_http import AzureAPIError
+from tools.gitlab_demo.pipeline import check_mr, feature_name, functional_digest, render_test, sanitize, verify_candidate
 from tools.gitlab_demo.verify import LoginForm
 
 
@@ -209,23 +208,41 @@ class GitLabPipelineTests(unittest.TestCase):
         self.assertEqual(base64.b64decode(result["content"]), b'FEATURE = "none"\n')
         self.assertEqual(result["last_commit_id"], "b" * 40)
 
-    @patch("tools.gitlab_demo.pipeline.ScopedLoadTest")
-    def test_existing_test_updates_and_only_not_found_creates(self, factory):
-        context = Mock(subscription="sub", tenant="tenant", load_id="resource")
-        client = factory.return_value
-        client.request.return_value = {"testId": "contoso-gitlab-transactions"}
-        self.assertEqual(upsert_test(context, Path("transactions.yaml")), "update")
-        self.assertEqual(context.load_cli.call_args.args[0][:2], ["test", "update"])
-        context.reset_mock()
-        client.request.side_effect = AzureAPIError(404, "LoadTestNotFound", "not found")
-        self.assertEqual(upsert_test(context, Path("transactions.yaml")), "create")
-        self.assertEqual(context.load_cli.call_args.args[0][:2], ["test", "create"])
-        for error in (AzureAPIError(403, "Forbidden", "denied"), OSError("network unavailable")):
-            context.reset_mock()
-            client.request.side_effect = error
-            with self.assertRaises((DemoError, OSError)):
-                upsert_test(context, Path("transactions.yaml"))
-            context.load_cli.assert_not_called()
+    def test_azure_commands_are_visible_and_the_whole_gate_stays_locked(self):
+        import yaml
+        from tools.gitlab_demo.common import ROOT
+        document = yaml.safe_load((ROOT / ".gitlab-ci.yml").read_text())
+        gate = "\n".join(document["performance_gate"]["script"])
+        for command in (
+            "az login --identity", "az account set", "az webapp deploy", "az load test list",
+            'az load test "$operation"', "az load test app-component add", "az load test server-metric add",
+            "az load test-run create", "az load test-run show", "az load test-run metrics list",
+            "az load test-run download-files", "az monitor metrics list", "az monitor log-analytics query",
+        ):
+            self.assertIn(command, gate)
+        self.assertNotIn("pipeline gate", gate)
+        self.assertNotIn("set -x", gate)
+        self.assertIn('count=$(az load test list', gate)
+        self.assertIn("set -euo pipefail", document["default"]["before_script"])
+        self.assertEqual(document["performance_gate"]["resource_group"], document["promote_tested_slot"]["resource_group"])
+        self.assertIn("az webapp deployment slot swap", "\n".join(document["promote_tested_slot"]["script"]))
+
+    def test_console_sanitizer_removes_url_queries_and_private_headers(self):
+        result = sanitize("GET https://example.test/log?sv=fixture&sig=private\nAuthorization: Bearer private\nsafe engine started")
+        self.assertNotIn("sig=private", result)
+        self.assertNotIn("Bearer private", result)
+        self.assertIn("safe engine started", result)
+
+    def test_actual_historical_red_still_fails_the_unchanged_contract(self):
+        from tools.gitlab_demo.common import ROOT, read_json
+        from tools.loadtest_gate import check_demo_contract, evaluate
+        payload = read_json(ROOT / "tests" / "fixtures" / "gitlab-alt-historical-red.json")
+        verdict = evaluate(payload)
+        check_demo_contract(verdict)
+        self.assertEqual(verdict.exit_code, 1)
+        self.assertEqual((verdict.samples, verdict.p95_ms, verdict.error_pct), (911, 1250, 0))
+        payload["testResult"] = "NOT_APPLICABLE"
+        self.assertNotEqual(evaluate(payload).exit_code, 0)
 
     def test_explicit_resume_rejects_measured_phase_or_a_premature_fix(self):
         import base64

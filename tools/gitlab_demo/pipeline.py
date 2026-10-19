@@ -1,12 +1,16 @@
-"""Build once, test an exact source SHA, then promote the tested staging slot."""
+"""Non-Azure bookkeeping for the explicit az commands in .gitlab-ci.yml."""
 
 from __future__ import annotations
 
 import argparse
 import ast
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
+from pathlib import Path
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -14,17 +18,13 @@ import time
 import urllib.error
 import urllib.parse
 import zipfile
-from datetime import datetime, timezone
-from pathlib import Path
 
-from tools.loadtest_gate import check_demo_contract, evaluate, run_snapshot
-
+from tools.loadtest_gate import check_demo_contract, evaluate
 from .common import (
-    DEMO_BRANCH, TEST_ID, DemoError, GitLab, ROOT, azure, contract_digest,
-    http_json, https_origin, read_json, required, run, sha, write_json,
+    DEMO_BRANCH, DemoError, GitLab, ROOT, contract_digest, http_json, https_origin,
+    read_json, required, run, sha, write_json,
 )
-from . import monitoring
-from .azure_http import AzureAPIError, ScopedLoadTest
+from .monitoring import query_window, sample_count, selected_metrics
 
 EVIDENCE = ROOT / "demo-evidence"
 DIST = ROOT / "dist"
@@ -56,7 +56,7 @@ def build(source_sha: str, pipeline_id: str) -> dict:
         capture_output=True, timeout=120,
     )
     if result.returncode:
-        raise DemoError(f"git archive failed: {result.stderr.decode(errors='replace')}")
+        raise DemoError("git archive could not package the exact source")
     DIST.mkdir(exist_ok=True)
     candidate = DIST / "candidate.zip"
     candidate.write_bytes(result.stdout)
@@ -67,9 +67,7 @@ def build(source_sha: str, pipeline_id: str) -> dict:
         package.writestr(info, json.dumps({"source_sha": source_sha, "pipeline_id": pipeline_id}))
         feature = feature_name(package.read("transaction_enrichment.py").decode("utf-8"))
     manifest = {
-        "source_sha": source_sha,
-        "pipeline_id": pipeline_id,
-        "feature": feature,
+        "source_sha": source_sha, "pipeline_id": pipeline_id, "feature": feature,
         "artifact_sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
         "contract_sha256": contract_digest(),
     }
@@ -94,30 +92,21 @@ def verify_candidate(source_sha: str, pipeline_id: str, folder: Path = DIST) -> 
     return manifest
 
 
-def wait_version(origin: str, source_sha: str, pipeline_id: str, *, seconds: int = 900) -> dict:
-    origin = https_origin(origin)
+def wait_version(origin: str, source_sha: str, pipeline_id: str, *, seconds=900) -> dict:
     deadline = time.monotonic() + seconds
-    last = "No response"
     while time.monotonic() < deadline:
         try:
-            version = http_json(origin + "/version")
+            version = http_json(https_origin(origin) + "/version")
         except urllib.error.HTTPError as error:
             if error.code not in {404, 409, 429, 500, 502, 503, 504}:
                 raise
-            last = f"HTTP {error.code}"
-        except urllib.error.URLError as error:
-            last = str(error.reason)
-        except json.JSONDecodeError:
-            last = "The starting app has not returned a JSON version document yet"
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            pass
         else:
-            if (
-                isinstance(version, dict) and version.get("source_sha") == source_sha
-                and str(version.get("pipeline_id")) == pipeline_id
-            ):
+            if isinstance(version, dict) and version.get("source_sha") == source_sha and str(version.get("pipeline_id")) == pipeline_id:
                 return version
-            last = f"Different candidate: {version.get('source_sha')!r}" if isinstance(version, dict) else "Malformed version document"
         time.sleep(10)
-    raise DemoError(f"{origin} did not serve the exact candidate within {seconds}s: {last}")
+    raise DemoError(f"{origin} did not serve the exact candidate within {seconds}s")
 
 
 def functional_digest(payload: dict) -> str:
@@ -136,45 +125,17 @@ def functional_digest(payload: dict) -> str:
 
 class Context:
     def __init__(self):
-        self.subscription = required("AZURE_SUBSCRIPTION_ID")
-        self.tenant = required("AZURE_TENANT_ID")
-        self.group = required("AZURE_RESOURCE_GROUP")
-        self.app = required("APP_NAME")
         self.staging = https_origin(required("STAGING_URL"))
         self.production = https_origin(required("PRODUCTION_URL"))
-        self.load = required("LOAD_TEST_NAME")
-        self.load_id = required("LOAD_TEST_RESOURCE_ID")
         self.staging_id = required("STAGING_RESOURCE_ID")
         self.plan_id = required("APP_SERVICE_PLAN_ID")
-        self.workspace = required("LOG_WORKSPACE_ID")
         self.source_sha = sha(required("CI_COMMIT_SHA"))
         self.pipeline_id = required("CI_PIPELINE_ID")
         self.job_id = required("CI_JOB_ID")
-        self.client = GitLab(
-            required("CI_SERVER_URL"), required("GITLAB_BOT_TOKEN"), required("CI_PROJECT_ID")
-        )
+        self.client = GitLab(required("CI_SERVER_URL"), required("GITLAB_BOT_TOKEN"), required("CI_PROJECT_ID"))
 
-    def load_cli(self, arguments: list[str], *, timeout=180) -> str:
-        return azure(
-            ["load", *arguments, "--load-test-resource", self.load, "--resource-group", self.group],
-            self.subscription, timeout=timeout,
-        )
-
-    def main_sha(self) -> str:
+    def main_sha(self):
         return self.client.get("/repository/branches/main")["commit"]["id"]
-
-    def login(self) -> None:
-        run([
-            "az", "login", "--identity", "--client-id", required("AZURE_CLIENT_ID"),
-            "--allow-no-subscriptions", "--only-show-errors", "-o", "none",
-        ], timeout=120)
-        account = json.loads(run(["az", "account", "show", "--only-show-errors", "-o", "json"]))
-        if account["id"] != self.subscription or account["tenantId"] != self.tenant:
-            raise DemoError("Runner's isolated CLI login did not select the expected managed-identity subscription")
-        write_json(EVIDENCE / "azure-auth.json", {
-            "subscription_id": account["id"], "tenant_id": account["tenantId"],
-            "managed_identity_client_id": required("AZURE_CLIENT_ID"),
-        })
 
 
 def check_mr(context: Context) -> dict:
@@ -182,20 +143,18 @@ def check_mr(context: Context) -> dict:
     deadline = time.monotonic() + 60
     while True:
         mr = context.client.get(f"/merge_requests/{iid}")
-        branch = context.client.get(
-            f"/repository/branches/{urllib.parse.quote(DEMO_BRANCH, safe='')}"
-        )
+        branch = context.client.get(f"/repository/branches/{urllib.parse.quote(DEMO_BRANCH, safe='')}")
         if (
             mr["state"] != "opened" or mr["source_branch"] != DEMO_BRANCH
             or mr["target_branch"] != "main" or branch["commit"]["id"] != context.source_sha
             or str(mr["source_project_id"]) != str(context.client.project_id)
             or str(mr["target_project_id"]) != str(context.client.project_id)
         ):
-            raise DemoError("Only the current, same-project, protected demo MR may use staging")
+            raise DemoError("Only the current same-project protected demo MR may use staging")
         if mr["sha"] == context.source_sha:
             break
         if time.monotonic() >= deadline:
-            raise DemoError("GitLab's MR diff cache did not catch up with the verified source branch")
+            raise DemoError("GitLab MR diff cache did not catch up with the verified branch")
         time.sleep(2)
     opened = context.client.get("/merge_requests?state=opened&per_page=100")
     if len(opened) != 1 or str(opened[0]["iid"]) != iid:
@@ -209,138 +168,121 @@ def render_test(staging: str, folder: Path) -> None:
     profile = read_json(source / "transactions.json")
     request = profile["scenarios"]["transactions"]["requests"][0]
     if request["endpoint"] != "https://TARGET_HOST/api/accounts/ACC-1001/transactions":
-        raise DemoError("The checked-in test target template has changed")
+        raise DemoError("The checked-in target template changed")
     request["endpoint"] = https_origin(staging) + "/api/accounts/ACC-1001/transactions"
     write_json(folder / "transactions.json", profile)
     shutil.copyfile(source / "transactions.yaml", folder / "transactions.yaml")
 
 
-def wait_load_run(context: Context, run_id: str, *, seconds=1200, settle_seconds=300):
-    deadline = time.monotonic() + seconds
-    settle_deadline = None
-    while time.monotonic() < deadline:
-        payload = json.loads(context.load_cli([
-            "test-run", "show", "--test-run-id", run_id, "-o", "json",
-        ]))
-        write_json(EVIDENCE / "run.json", run_snapshot(payload))
-        verdict = evaluate(payload)
-        print(f"ALT {run_id}: {payload.get('status')} / {verdict.outcome}", flush=True)
-        if verdict.outcome != "pending":
-            return payload, verdict
-        if payload.get("status") == "DONE":
-            if settle_deadline is None:
-                settle_deadline = time.monotonic() + settle_seconds
-            elif time.monotonic() >= settle_deadline:
-                raise DemoError("ALT DONE but verdict/criterion/statistic evidence did not settle")
-        time.sleep(10)
-    raise DemoError("ALT run did not reach a judged terminal state within the bounded timeout")
+def export(name: str, values: dict) -> None:
+    (EVIDENCE / name).write_text("".join(f"export {key}={shlex.quote(str(value))}\n" for key, value in values.items()))
 
 
-def upsert_test(context: Context, config_file: Path) -> str:
-    client = ScopedLoadTest(context.subscription, context.tenant, context.load_id)
-    try:
-        client.request("GET", f"tests/{TEST_ID}")
-    except AzureAPIError as error:
-        if error.status != 404:
-            raise
-        operation = "create"
-    else:
-        operation = "update"
-    context.load_cli([
-        "test", operation, "--test-id", TEST_ID, "--load-test-config-file",
-        str(config_file), "-o", "none",
-    ], timeout=300)
-    return operation
-
-
-def gate(context: Context) -> int:
+def prepare(context: Context):
     EVIDENCE.mkdir(exist_ok=True)
     summary = {
-        "outcome": "infrastructure_failed",
-        "reason": "Gate did not complete",
-        "source_sha": context.source_sha,
-        "pipeline_id": context.pipeline_id,
-        "job_id": context.job_id,
-        "mr_iid": required("CI_MERGE_REQUEST_IID"),
-        "started_at": now(),
+        "outcome": "infrastructure_failed", "reason": "Native CLI gate did not complete",
+        "source_sha": context.source_sha, "pipeline_id": context.pipeline_id,
+        "job_id": context.job_id, "mr_iid": required("CI_MERGE_REQUEST_IID"), "started_at": now(),
     }
     write_json(EVIDENCE / "summary.json", summary)
+    manifest = verify_candidate(context.source_sha, context.pipeline_id)
+    if manifest["feature"] != "merchant-category-v1":
+        raise DemoError("Candidate must contain the actual merchant/category feature")
+    check_mr(context)
+    base = sha(context.main_sha())
+    run(["git", "merge-base", "--is-ancestor", base, context.source_sha])
     run_id = f"gl-{context.pipeline_id}-{context.job_id}-{context.source_sha[:8]}"
-    run_started = False
-    final_payload = None
+    summary.update(manifest, base_main_sha=base, alt_run_id=run_id)
+    write_json(EVIDENCE / "summary.json", summary)
+    export("gate.env", {"ALT_RUN_ID": run_id})
+    render_test(context.staging, EVIDENCE / "input")
+
+
+def warm(context: Context):
+    write_json(EVIDENCE / "version.json", wait_version(context.staging, context.source_sha, context.pipeline_id))
+    headers = {"X-Demo-Admin-Token": required("DEMO_ADMIN_TOKEN")}
+    config = http_json(context.staging + "/admin/config", headers=headers)["config"]
+    if any(config.get(key) != value for key, value in EXPECTED_CONFIG.items()):
+        raise DemoError("Stable optimized app settings differ from the fixed contract")
+    write_json(EVIDENCE / "app-config.json", config)
+    http_json(context.staging + "/admin/reset", payload={}, headers=headers)
+    summary = read_json(EVIDENCE / "summary.json")
+    for _ in range(3):
+        summary["functional_sha256"] = functional_digest(http_json(
+            context.staging + "/api/accounts/ACC-1001/transactions?page_size=40",
+        ))
+    check_mr(context)
+    if context.main_sha() != summary["base_main_sha"]:
+        raise DemoError("main drifted during candidate preparation")
+    write_json(EVIDENCE / "summary.json", summary)
+    print("Exact SHA/pipeline, fixed app settings, authenticated reset and three 40-row warm-ups verified.")
+
+
+def monitoring_input():
+    metrics = {}
+    for label in ("staging", "shared_plan"):
+        metrics.update(selected_metrics(
+            read_json(EVIDENCE / f"metric-definitions-{label}.json"),
+            read_json(EVIDENCE / f"resource-{label}.json"), label,
+        ))
+    write_json(EVIDENCE / "selected-server-metrics.json", {"metrics": metrics})
+
+
+def monitoring_check(context: Context):
+    components = read_json(EVIDENCE / "app-components.json")["components"]
+    metrics = read_json(EVIDENCE / "server-metric-definitions.json")["metrics"]
+    if not {context.staging_id.lower(), context.plan_id.lower()}.issubset(key.lower() for key in components):
+        raise DemoError("Native CLI did not retain staging/shared-plan app components")
+    expected = read_json(EVIDENCE / "selected-server-metrics.json")["metrics"]
+    if not {key.lower() for key in expected}.issubset(key.lower() for key in metrics):
+        raise DemoError("Native CLI did not retain all seven server metric definitions")
+    print("Actual staging slot + shared S1 plan and seven metric definitions verified; definitions are NOT samples.")
+
+
+def telemetry_summary():
+    result = {"client_gate_independent": True, "resources": {}}
+    for label in ("staging", "shared_plan"):
+        files = list(EVIDENCE.glob(f"server-metrics-{label}-*.json"))
+        count = sum(sample_count(read_json(path)) for path in files)
+        expected = 2 if label == "staging" else 1
+        result["resources"][label] = {
+            "status": (
+                "partial_samples" if count and len(files) < expected else
+                "samples_available" if count else "pending_ingestion" if files else "unavailable"
+            ),
+            "sample_count": count, "available_files": len(files), "expected_files": expected,
+        }
+    logs = EVIDENCE / "staging-console-logs.json"
+    count = len(read_json(logs)) if logs.exists() else 0
+    result["logs"] = {
+        "status": ("rows_available" if count else "pending_ingestion") if logs.exists() else "unavailable",
+        "row_count": count,
+    }
+    write_json(EVIDENCE / "monitoring-summary.json", result)
+    return result
+
+
+def finish(context: Context, code: int) -> int:
+    path = EVIDENCE / "summary.json"
+    summary = read_json(path) if path.exists() else {"source_sha": context.source_sha, "job_id": context.job_id}
     try:
-        manifest = verify_candidate(context.source_sha, context.pipeline_id)
-        if manifest["feature"] != "merchant-category-v1":
-            raise DemoError("The candidate must contain the actual merchant/category feature")
-        summary.update(manifest)
-        check_mr(context)
-        main_sha = sha(context.main_sha())
-        run(["git", "merge-base", "--is-ancestor", main_sha, context.source_sha])
-        summary["base_main_sha"] = main_sha
-        context.login()
-        azure([
-            "webapp", "deploy", "--resource-group", context.group, "--name", context.app,
-            "--slot", "staging", "--src-path", str(DIST / "candidate.zip"), "--type", "zip",
-            "--clean", "true", "--restart", "true", "--async", "true",
-            "--track-status", "false", "-o", "none",
-        ], context.subscription, timeout=900)
-        version = wait_version(context.staging, context.source_sha, context.pipeline_id)
-        write_json(EVIDENCE / "version.json", version)
-        headers = {"X-Demo-Admin-Token": required("DEMO_ADMIN_TOKEN")}
-        config = http_json(context.staging + "/admin/config", headers=headers)["config"]
-        if any(config.get(key) != value for key, value in EXPECTED_CONFIG.items()):
-            raise DemoError("Stable optimized app settings differ from the fixed demo contract")
-        write_json(EVIDENCE / "app-config.json", config)
-        http_json(context.staging + "/admin/reset", payload={}, headers=headers)
-        for _ in range(3):
-            page = http_json(context.staging + "/api/accounts/ACC-1001/transactions?page_size=40")
-            summary["functional_sha256"] = functional_digest(page)
-        check_mr(context)
-        if context.main_sha() != main_sha:
-            raise DemoError("main drifted during candidate preparation")
-        render_test(context.staging, EVIDENCE / "input")
-        upsert_test(context, EVIDENCE / "input" / "transactions.yaml")
-        monitoring.configure(context, EVIDENCE)
-        context.load_cli([
-            "test-run", "create", "--test-id", TEST_ID, "--test-run-id", run_id, "--no-wait",
-            "--description", f"GitLab pipeline {context.pipeline_id}; source {context.source_sha}",
-            "-o", "none",
-        ], timeout=180)
-        run_started = True
-        summary["alt_run_id"] = run_id
-        write_json(EVIDENCE / "summary.json", summary)
-        payload, verdict = wait_load_run(context, run_id)
-        final_payload = payload
-        if verdict.outcome in {"passed", "performance_failed"}:
-            check_demo_contract(verdict)
-        summary.update(verdict.as_dict())
-        summary["alt_start"] = payload.get("startDateTime")
-        summary["alt_end"] = payload.get("endDateTime")
+        payload = read_json(EVIDENCE / "run.json")
+        verdict = evaluate(payload)
+        if code != verdict.exit_code or (EVIDENCE / "download-failed").exists():
+            raise DemoError("A native CLI step or required evidence download failed")
+        if verdict.outcome not in {"passed", "performance_failed"}:
+            raise DemoError("No settled, judged client measurement")
+        check_demo_contract(verdict)
         wait_version(context.staging, context.source_sha, context.pipeline_id, seconds=60)
         check_mr(context)
-        if context.main_sha() != main_sha:
-            raise DemoError("main drifted while the candidate was under load")
-    except (DemoError, ValueError, OSError, subprocess.TimeoutExpired) as error:
+        if context.main_sha() != summary["base_main_sha"]:
+            raise DemoError("main drifted during the locked load interval")
+        summary.update(verdict.as_dict(), alt_start=payload["startDateTime"], alt_end=payload["endDateTime"])
+    except (DemoError, ValueError, OSError, KeyError) as error:
         summary.update(outcome="infrastructure_failed", reason=str(error))
-        raise
-    finally:
-        if run_started:
-            try:
-                context.load_cli([
-                    "test-run", "download-files", "--test-run-id", run_id,
-                    "--path", str(EVIDENCE / "downloads"), "--result", "--log", "--report",
-                    "--force", "-o", "none",
-                ], timeout=300)
-            except (DemoError, subprocess.TimeoutExpired) as error:
-                summary.update(outcome="infrastructure_failed", reason=f"Evidence download failed: {error}")
-            if final_payload is not None:
-                try:
-                    summary["monitoring"] = monitoring.collect(context, final_payload, EVIDENCE)
-                except (DemoError, ValueError, OSError, subprocess.TimeoutExpired) as error:
-                    summary["monitoring"] = {"status": "error", "reason": str(error)}
-                    print(f"Monitoring evidence unavailable (client verdict unchanged): {error}", file=sys.stderr)
-        summary["finished_at"] = now()
-        write_json(EVIDENCE / "summary.json", summary)
+    summary.update(monitoring=telemetry_summary(), finished_at=now())
+    write_json(path, summary)
     print(json.dumps(summary, indent=2))
     return {"passed": 0, "performance_failed": 1}.get(summary["outcome"], 2)
 
@@ -350,84 +292,89 @@ def verified_green(context: Context, job_id: str, mr_iid: str) -> dict:
     if job["name"] != "performance_gate" or job["status"] != "success":
         raise DemoError("Promotion requires the successful locked performance_gate job")
     producing = context.client.get(f"/pipelines/{job['pipeline']['id']}")
-    if (
-        producing["sha"] != context.source_sha or producing["status"] != "success"
-        or producing["source"] != "merge_request_event"
-    ):
-        raise DemoError("The approved MR pipeline is not successful for this exact commit")
-    body = context.client.request(
-        "GET", f"{context.client.project}/jobs/{int(job_id)}/artifacts/demo-evidence/summary.json",
-        raw=True,
-    )
-    proof = json.loads(body)
+    if producing["sha"] != context.source_sha or producing["status"] != "success" or producing["source"] != "merge_request_event":
+        raise DemoError("Approved MR pipeline is not successful for this exact source")
+    proof = json.loads(context.client.request(
+        "GET", f"{context.client.project}/jobs/{int(job_id)}/artifacts/demo-evidence/summary.json", raw=True,
+    ))
     if (
         proof.get("outcome") != "passed" or proof.get("source_sha") != context.source_sha
-        or str(proof.get("job_id")) != str(job_id)
-        or str(proof.get("pipeline_id")) != str(producing["id"])
-        or str(proof.get("mr_iid")) != str(mr_iid)
-        or proof.get("contract_sha256") != contract_digest()
+        or str(proof.get("job_id")) != str(job_id) or str(proof.get("pipeline_id")) != str(producing["id"])
+        or str(proof.get("mr_iid")) != str(mr_iid) or proof.get("contract_sha256") != contract_digest()
     ):
-        raise DemoError("Approved gate evidence does not match this promotion")
+        raise DemoError("Gate evidence does not match this promotion")
     mr = context.client.get(f"/merge_requests/{int(mr_iid)}")
-    head_pipeline = mr.get("head_pipeline") or {}
-    if (
-        mr["state"] != "merged" or mr["sha"] != context.source_sha
-        or str(head_pipeline.get("id")) != str(producing["id"])
-        or head_pipeline.get("status") != "success"
-    ):
-        raise DemoError("The merged MR does not point to the approved latest green pipeline")
+    head = mr.get("head_pipeline") or {}
+    if mr["state"] != "merged" or mr["sha"] != context.source_sha or head.get("id") != producing["id"] or head.get("status") != "success":
+        raise DemoError("Merged MR does not point at the approved latest green pipeline")
     return proof
 
 
-def promote(context: Context) -> int:
+def promotion_prepare(context: Context):
     proof = verified_green(context, required("DEMO_GATE_JOB_ID"), required("DEMO_MR_IID"))
     expected = sha(required("DEMO_PROMOTE_SHA"))
-    if context.source_sha != expected or required("CI_COMMIT_BRANCH") != "main":
-        raise DemoError("Only the fast-forwarded, tested main commit may be promoted")
-    if context.main_sha() != expected:
-        raise DemoError("main advanced after this promotion pipeline was created")
+    if context.source_sha != expected or required("CI_COMMIT_BRANCH") != "main" or context.main_sha() != expected:
+        raise DemoError("Only the current fast-forwarded tested main commit may be promoted")
     if context.client.get("/merge_requests?state=opened&per_page=100"):
-        raise DemoError("Another candidate is open; promotion is not exclusive")
-    context.login()
-    payload = json.loads(context.load_cli([
-        "test-run", "show", "--test-run-id", proof["alt_run_id"], "-o", "json",
-    ]))
-    verdict = evaluate(payload)
-    check_demo_contract(verdict)
-    if verdict.outcome != "passed":
-        raise DemoError("A fresh ALT read no longer proves a settled pass")
+        raise DemoError("Another candidate is open")
     wait_version(context.staging, expected, str(proof["pipeline_id"]), seconds=60)
-    if context.main_sha() != expected:
-        raise DemoError("main drifted immediately before the slot swap")
-    azure([
-        "webapp", "deployment", "slot", "swap", "--resource-group", context.group,
-        "--name", context.app, "--slot", "staging", "--target-slot", "production",
-        "-o", "none",
-    ], context.subscription, timeout=900)
-    version = wait_version(context.production, expected, str(proof["pipeline_id"]))
-    if context.main_sha() != expected:
-        raise DemoError("main changed during promotion; investigate the isolated demo before continuing")
+    write_json(EVIDENCE / "approved-gate.json", proof)
+    export("promotion.env", {"ALT_RUN_ID": proof["alt_run_id"]})
+
+
+def promotion_finish(context: Context):
+    proof = read_json(EVIDENCE / "approved-gate.json")
+    if context.main_sha() != context.source_sha:
+        raise DemoError("main drifted during promotion")
+    version = wait_version(context.production, context.source_sha, str(proof["pipeline_id"]))
+    if context.main_sha() != context.source_sha:
+        raise DemoError("main changed during the tested slot swap")
     write_json(EVIDENCE / "promotion.json", {
-        "outcome": "promoted", "source_sha": expected, "pipeline_id": context.pipeline_id,
+        "outcome": "promoted", "source_sha": context.source_sha, "pipeline_id": context.pipeline_id,
         "gate_pipeline_id": proof["pipeline_id"], "alt_run_id": proof["alt_run_id"],
         "artifact_sha256": proof["artifact_sha256"], "production_url": context.production,
         "version": version, "finished_at": now(),
     })
-    print(f"Promoted the tested slot, without rebuilding: {expected} -> {context.production}")
-    return 0
+
+
+def sanitize(text: str) -> str:
+    for key in ("GITLAB_BOT_TOKEN", "DEMO_ADMIN_TOKEN", "IDENTITY_HEADER", "MSI_SECRET"):
+        value = os.getenv(key)
+        if value:
+            text = text.replace(value, "[REDACTED]")
+    text = re.sub(r"https?://[^\s\"<>]+", lambda match: match[0].split("?")[0] + ("?[REDACTED]" if "?" in match[0] else ""), text)
+    return re.sub(r"(?im)^.*(?:authorization|private-token|x-demo-admin-token)\s*:.*$", "[REDACTED HEADER]", text)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["build", "gate", "promote"])
+    parser.add_argument("operation", choices=[
+        "build", "prepare", "warm", "finish", "monitoring-input", "monitoring-check",
+        "window", "sanitize", "promotion-prepare", "promotion-finish",
+    ])
     parser.add_argument("--sha")
     parser.add_argument("--pipeline-id")
+    parser.add_argument("--exit-code", type=int, default=2)
     args = parser.parse_args()
     try:
-        if args.operation == "build":
+        if args.operation == "sanitize":
+            print("\n".join(sanitize(sys.stdin.read()).splitlines()[:40]))
+        elif args.operation == "build":
             build(args.sha or required("CI_COMMIT_SHA"), args.pipeline_id or required("CI_PIPELINE_ID"))
-            return 0
-        return {"gate": gate, "promote": promote}[args.operation](Context())
+        elif args.operation == "monitoring-input":
+            monitoring_input()
+        elif args.operation == "window":
+            start, end = query_window(read_json(EVIDENCE / "run.json"))
+            export("telemetry.env", {"METRIC_START": start, "METRIC_END": end})
+        else:
+            context = Context()
+            if args.operation == "finish":
+                return finish(context, args.exit_code)
+            {
+                "prepare": prepare, "warm": warm, "monitoring-check": monitoring_check,
+                "promotion-prepare": promotion_prepare, "promotion-finish": promotion_finish,
+            }[args.operation](context)
+        return 0
     except (DemoError, ValueError, OSError, subprocess.TimeoutExpired) as error:
         print(str(error), file=sys.stderr)
         return 2

@@ -6,7 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 RUN apt-get update -qq \
-    && apt-get install --no-install-recommends -y git bash ca-certificates curl procps util-linux \
+    && apt-get install --no-install-recommends -y git bash ca-certificates curl procps util-linux jq=1.6-2.1+deb12u3 unzip=6.0-28+deb12u1 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --shell /bin/bash gitlab-runner \
     && rm -f /home/gitlab-runner/.bash_logout \
@@ -15,11 +15,15 @@ COPY --from=runner /usr/bin/gitlab-runner /usr/local/bin/gitlab-runner
 COPY requirements-dev.txt /opt/demo-requirements.txt
 RUN pip install --no-cache-dir azure-cli==2.89.0 \
     && az extension add --name load --version 2.1.0 --yes --only-show-errors \
+    && az extension add --name log-analytics --version 1.0.0b3 --allow-preview true --yes --only-show-errors \
     && chmod -R a+rX /opt/az-extensions \
     && python -m venv /opt/demo-python \
     && /opt/demo-python/bin/pip install --no-cache-dir -r /opt/demo-requirements.txt \
     && az version \
     && gitlab-runner --version \
+    && jq --version \
+    && command -v unzip \
+    && az monitor log-analytics query --help >/dev/null \
     && /opt/demo-python/bin/python -c "import fastapi, httpx; print('Runner Python dependencies verified')"
 COPY entrypoint.sh /opt/demo-entrypoint.sh
 COPY configure.py /opt/configure-runner.py

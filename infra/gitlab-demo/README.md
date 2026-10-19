@@ -57,6 +57,13 @@ declarations, NFS data, backup archives, MR history and evidence are retained.
 
 ## What it demonstrates
 
+The Azure path is now **CLI-first**: open `.gitlab-ci.yml` and the
+`performance_gate` console to see direct managed-identity login, candidate
+deployment, load-test upsert/run/read/download, component/metric definitions,
+client/server metrics and correlated Log Analytics queries. Engine logs are
+shown as a bounded sanitized console excerpt, not just hidden in artifacts.
+See [the CLI presenter walkthrough](../../docs/gitlab-cli-pipeline.md).
+
 Run the external controller once. It creates an actual feature commit and GitLab
 merge request on `demo-merchant-enrichment`. The feature adds merchant/category
 metadata to transaction history using one simulated database lookup per row.
@@ -88,7 +95,7 @@ carry credentials.
 | Retained legacy storage | Original 100 GiB Premium Azure Files share and exact migration backups; not active GitLab storage |
 | Public GitLab | ACA's DNS name and TLS termination; HTTP redirect, local password/PAT authentication, signups disabled before readiness |
 | Runner | Separate ACA shell-executor container, 1 vCPU/2 GiB; global concurrency 2; project-specific protected runner |
-| Runner tools | Runner 19.4.0, Python 3.12.12, Azure CLI 2.89.0, load extension 2.1.0 |
+| Runner tools | Runner 19.4.0, Python 3.12.12, Azure CLI 2.89.0, load 2.1.0, log-analytics 1.0.0b3, pinned jq/unzip |
 | System under test | New Linux S1 App Service and `staging` slot; ZIP/Oryx deployment, one worker |
 | Load generator | New Azure Load Testing resource; one URL-test engine, read-only transactions |
 | Azure credentials | Runner user-assigned managed identity; Website Contributor on this app, Load Test Contributor on ALT, AcrPull on ACR, Monitoring Reader on staging/plan and Log Analytics Reader on this workspace |
@@ -174,7 +181,7 @@ access path: the VM has no public IP/SSH rule. Never print credential JSON.
 ```powershell
 $resources = Get-Content "$private\resources.json" -Raw | ConvertFrom-Json
 Push-Location infra\gitlab-demo\images\runner
-az acr build --registry $resources.registry --image runner:19.4.0-demo-v2 `
+az acr build --registry $resources.registry --image runner:19.4.0-demo-v3 `
   --platform linux/amd64 --file Dockerfile --subscription $subscription .
 Pop-Location
 az acr import --name $resources.registry --source docker.io/library/nginx:stable-alpine `
@@ -287,8 +294,9 @@ continues that original MR. It creates no new scenario, reruns no job itself,
 archives the stopped report, checks the unchanged target base and exact naive
 feature, and still requires a real settled p95-only failure before batching.
 It cannot resume past a measured-red phase or accept a prematurely batched
-feature. Setup uses a scoped test lookup: existing definitions are updated,
-only a real HTTP 404 is created, and authorization/network failures stop loudly.
+feature. Setup uses a checked native `az load test list` inventory: existing
+definitions are updated and only a successfully confirmed absence is created.
+Authorization/network/list failures stop loudly rather than being treated as absence.
 App-component and seven server-metric bindings are configured/read back after
 each update; no existing test/run history is deleted.
 
@@ -446,7 +454,8 @@ python -m tools.gitlab_demo.azure_http metric-definitions --private-dir $private
 ```
 
 The runner has its own per-job `AZURE_CONFIG_DIR`, one managed-identity
-subscription, and records/validates the selected subscription/directory before
+subscription, and visibly selects the target with `az account set` **only inside
+that job's isolated profile**, then records/validates subscription/directory before
 using native `az load`. Tokens and SAS-bearing artifact URLs are excluded from
 the saved read-only snapshots. After changing Terraform resource outputs for an
 existing lab, `python -m tools.gitlab_demo.bootstrap configure --private-dir
