@@ -126,16 +126,19 @@ def seed(args) -> None:
         "GIT_TERMINAL_PROMPT": "0",
     }
     run(["git", "push", project["http_url_to_repo"], f"{head}:refs/heads/main"], env=env, timeout=300)
+    protected = {item["name"]: item for item in root.get("/protected_branches?per_page=100")}
     for branch in ("main", DEMO_BRANCH):
-        try:
-            root.request("GET", f"{root.project}/protected_branches/{urllib.parse.quote(branch, safe='')}")
-        except APIError as error:
-            if error.status != 404:
-                raise
+        if branch not in protected:
             root.request("POST", f"{root.project}/protected_branches", {
                 "name": branch, "push_access_level": 40, "merge_access_level": 40,
                 "allow_force_push": False,
             })
+        else:
+            rule = protected[branch]
+            push = {entry["access_level"] for entry in rule["push_access_levels"]}
+            merge = {entry["access_level"] for entry in rule["merge_access_levels"]}
+            if rule.get("allow_force_push") or push != {40} or merge != {40}:
+                raise DemoError(f"Existing {branch} protection does not match the required Maintainer-only rule")
     configured = root.get()
     if not configured.get("only_allow_merge_if_pipeline_succeeds"):
         raise DemoError("GitLab did not enable pipelines-must-succeed")

@@ -13,7 +13,7 @@ Use only disposable demo code and synthetic data.
 ## What it demonstrates
 
 Run the external controller once. It creates an actual feature commit and GitLab
-merge request on `demo/merchant-enrichment`. The feature adds merchant/category
+merge request on `demo-merchant-enrichment`. The feature adds merchant/category
 metadata to transaction history using one simulated database lookup per row.
 Functional tests pass, but a real Azure Load Testing run breaches the p95 gate.
 GitLab blocks merge. Only after that exact settled, p95-only failure does the
@@ -194,6 +194,9 @@ bootstrap PAT is then revoked. It does **not** push to GitHub or create a GitHub
 Partial bootstrap progress stays in private JSON so a retry can resume it.
 Runner creation uses the temporary local-admin PAT; the project bot is used
 only for project-scoped repository, pipeline and variable operations.
+The fixed demo branch has no slash because this ACA proxy normalizes encoded
+slashes in URL path parameters. File reads use documented tree/blob/commit
+queries, not encoded-slash file endpoints or double-encoding workarounds.
 
 The bootstrap sets `deploy_runner=true` in the saved private variables. Validate,
 plan and apply to start the runner. Then run `verify` again to establish the

@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
-DEMO_BRANCH = "demo/merchant-enrichment"
+DEMO_BRANCH = "demo-merchant-enrichment"
 FEATURE_FILE = "src/transaction_enrichment.py"
 TEST_ID = "contoso-gitlab-transactions"
 

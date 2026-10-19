@@ -39,9 +39,26 @@ def exclusive(path: Path):
 
 
 def file_at(client: GitLab, path: str, ref: str) -> dict:
-    return client.get(
-        f"/repository/files/{urllib.parse.quote(path, safe='')}?ref={urllib.parse.quote(ref, safe='')}"
+    directory, _, name = path.rpartition("/")
+    tree = client.get("/repository/tree?" + urllib.parse.urlencode({
+        "path": directory, "ref": ref, "per_page": 100,
+    }))
+    entry = next((item for item in tree if item["path"] == path and item["type"] == "blob"), None)
+    if entry is None:
+        raise DemoError(f"Tracked file is missing at {ref}: {path}")
+    content = client.request(
+        "GET", f"{client.project}/repository/blobs/{entry['id']}/raw", raw=True,
     )
+    commits = client.get("/repository/commits?" + urllib.parse.urlencode({
+        "ref_name": ref, "path": path, "per_page": 1,
+    }))
+    if not commits:
+        raise DemoError(f"No file history was returned at {ref}: {path}")
+    return {
+        "file_path": path, "file_name": name,
+        "content": base64.b64encode(content).decode(),
+        "last_commit_id": commits[0]["id"],
+    }
 
 
 def commit_recipe(client: GitLab, recipe: str, message: str, *, start_sha=None) -> str:
