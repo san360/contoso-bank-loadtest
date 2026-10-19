@@ -417,12 +417,15 @@ and average memory working set (bytes). Plan CPU/memory percentages and HTTP
 queue length are explicitly **shared with production**, not candidate-isolated.
 These are diagnostic definitions, not additional gate thresholds.
 
-Each locked gate configures and reads back the components/definitions before
-starting the run. Artifacts include `app-components.json`,
-`server-metric-definitions.json`, their per-run counterparts,
-`client-metric-series.json`, `server-metrics-staging.json`,
-`server-metrics-shared_plan.json`, `staging-console-logs.json` and
-`monitoring-summary.json`. Server samples are queried from Azure Monitor for the
+Each locked gate reads back the correctly prepared components/definitions before
+starting the run. Native CLI 2.1 cannot safely add the nested slot type; it never
+substitutes the production parent. Supported missing plan metrics can be added
+natively. Artifacts include `app-components.json`,
+`server-metric-definitions.json`, `client-metric-series.json`,
+`server-metrics-staging-Total.json`, `server-metrics-staging-Average.json`,
+`server-metrics-shared_plan-Average.json`, `staging-console-logs.json`, safe
+run/verdict/summary JSON and downloaded result/log/report archives. The advanced
+MR path also writes `monitoring-summary.json`. Server samples use the
 real run's time window and bordering one-minute buckets. A definition does not
 prove any time-series samples exist; zero is a real sample, null/empty is not.
 Pending ingestion and unavailable/forbidden telemetry are reported explicitly.

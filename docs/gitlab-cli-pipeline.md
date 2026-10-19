@@ -80,3 +80,30 @@ printed. Runner prerequisites are pinned in its Dockerfile: jq, unzip, load 2.1.
 and log-analytics 1.0.0b3. Its explicit test environment also pins PyYAML 6.0.3.
 
 Reference: [Microsoft's Azure Load Testing CLI CI/CD guide](https://learn.microsoft.com/azure/app-testing/load-testing/how-to-configure-load-test-cicd).
+
+## Verified live execution (2026-10-19)
+
+[CI-only MR2](https://gitlab-clean.greenpond-7c00b83b.swedencentral.azurecontainerapps.io/root/contoso-bank/-/merge_requests/2)
+was fast-forward merged only after the advanced native-CLI
+[pipeline8](https://gitlab-clean.greenpond-7c00b83b.swedencentral.azurecontainerapps.io/root/contoso-bank/-/pipelines/8)
+passed: run `gl-8-22-af3663bb`, 4,999 samples, p95 **360 ms**, errors **0%**.
+Its source/functional/load-contract evidence remains compatible with the
+optional external controller.
+
+The primary, actual API-mode
+[pipeline9](https://gitlab-clean.greenpond-7c00b83b.swedencentral.azurecontainerapps.io/root/contoso-bank/-/pipelines/9)
+ran exactly one
+[`cli_walkthrough` job23](https://gitlab-clean.greenpond-7c00b83b.swedencentral.azurecontainerapps.io/root/contoso-bank/-/jobs/23):
+run `cli-9-23`, **5,336 samples, p95 310 ms, errors 0%**. Its console contains
+actual sanitized engine log lines, **30** real client metric points, component/definition
+inventories, **19** non-null staging metric points, **15** shared-plan points and
+**100** source-correlated application log rows. The trace has zero Python
+commands and no application deployment/reset/slot swap.
+
+Both probes read deployed staging source
+`af3663bb04ee4ca9c1a93fb1370bac1c1427293b`, producing pipeline8, unchanged
+before/after the basic walkthrough. Production remains the historical tested
+`39ab1f106620b71cda89ec31b48c3f692c7f5042` artifact from pipeline3.
+No old scenario/reset/promotion was rerun. Pipelines5-7 remain transparently
+retained setup failures before any measured ALT run (test dependency and native
+CLI argument/type validation), not new performance regressions.
