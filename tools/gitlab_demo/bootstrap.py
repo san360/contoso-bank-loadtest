@@ -151,7 +151,7 @@ def seed(args) -> None:
         write_json(folder / "secrets.json", credentials)
     bot = GitLab(resources["gitlab_url"], credentials["project_token"], project["id"])
     if "runner_id" not in progress:
-        runner = bot.request("POST", "user/runners", {
+        runner = root.request("POST", "user/runners", {
             "runner_type": "project_type", "project_id": project["id"],
             "description": "ACA-only demo shell runner", "tag_list": ["aca-demo"],
             "run_untagged": False, "locked": True, "access_level": "ref_protected",

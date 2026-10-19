@@ -192,6 +192,8 @@ protected MR resources, creates a 30-day project bot token and project-specific
 protected runner, and configures protected CI variables. The short-lived root
 bootstrap PAT is then revoked. It does **not** push to GitHub or create a GitHub PR.
 Partial bootstrap progress stays in private JSON so a retry can resume it.
+Runner creation uses the temporary local-admin PAT; the project bot is used
+only for project-scoped repository, pipeline and variable operations.
 
 The bootstrap sets `deploy_runner=true` in the saved private variables. Validate,
 plan and apply to start the runner. Then run `verify` again to establish the
