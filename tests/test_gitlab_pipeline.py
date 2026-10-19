@@ -10,6 +10,8 @@ from unittest.mock import patch
 from tools.gitlab_demo.common import DemoError, contract_digest, https_origin, write_json
 from tools.gitlab_demo.controller import gate_evidence, wait_merge_status
 from tools.gitlab_demo.pipeline import check_mr, feature_name, functional_digest, render_test, verify_candidate
+from tools.gitlab_demo.aca_exec import ExecError
+from tools.gitlab_demo.verify import LoginForm
 
 
 class GitLabPipelineTests(unittest.TestCase):
@@ -87,6 +89,18 @@ class GitLabPipelineTests(unittest.TestCase):
                          "merchant-category-v1")
         with self.assertRaises(DemoError):
             feature_name('FEATURE = str(42)')
+
+    def test_admin_errors_do_not_print_private_command_output(self):
+        failure = ExecError(1, "test-fixture-private-diagnostic")
+        self.assertEqual(failure.output, "test-fixture-private-diagnostic")
+        self.assertNotIn("test-fixture-private-diagnostic", str(failure))
+
+    def test_login_parser_accepts_the_real_input_or_csrf_meta(self):
+        form = LoginForm()
+        form.feed('<meta name="csrf-token" content="meta-fixture">')
+        self.assertEqual(form.token, "meta-fixture")
+        form.feed('<input name="authenticity_token" value="form-fixture">')
+        self.assertEqual(form.token, "form-fixture")
 
     def test_mr_cache_lag_is_bounded_but_a_new_source_fails_closed(self):
         source = "a" * 40

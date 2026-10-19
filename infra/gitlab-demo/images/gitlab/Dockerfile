@@ -3,13 +3,18 @@ ENV PATH=/opt/gitlab/bin:/opt/gitlab/embedded/bin:$PATH
 COPY gitlab.rb /opt/demo/gitlab.rb
 COPY bootstrap.rb /opt/demo/bootstrap.rb
 COPY entrypoint.sh /opt/demo/entrypoint.sh
+COPY post-configure.sh /opt/demo/post-configure.sh
+COPY readiness.rb /opt/demo/readiness.rb
 COPY backup.sh /opt/demo/backup.sh
 RUN sed -i 's/\r$//' /opt/demo/*.sh /opt/demo/*.rb \
-    && chmod 755 /opt/demo/entrypoint.sh /opt/demo/backup.sh \
+    && chmod 755 /opt/demo/entrypoint.sh /opt/demo/post-configure.sh /opt/demo/backup.sh \
     && /opt/gitlab/embedded/bin/ruby -c /opt/demo/gitlab.rb \
     && /opt/gitlab/embedded/bin/ruby -c /opt/demo/bootstrap.rb \
-    && bash -n /opt/demo/entrypoint.sh /opt/demo/backup.sh \
+    && /opt/gitlab/embedded/bin/ruby -c /opt/demo/readiness.rb \
+    && bash -n /opt/demo/entrypoint.sh /opt/demo/post-configure.sh /opt/demo/backup.sh \
     && test -x /assets/init-container \
+    && grep -q GITLAB_POST_RECONFIGURE_SCRIPT /assets/init-container \
+    && command -v curl \
     && command -v gitlab-rails \
     && command -v gitlab-ctl \
     && command -v gitlab-backup

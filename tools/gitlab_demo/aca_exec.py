@@ -20,6 +20,13 @@ from pathlib import Path
 from .common import DemoError, azure, read_json
 
 
+class ExecError(DemoError):
+    def __init__(self, exit_code: int, output: str):
+        self.exit_code = exit_code
+        self.output = output
+        super().__init__(f"GitLab administration failed with exit {exit_code}; use a private output file for diagnostics")
+
+
 def execute(resources: dict, script: str, *, timeout=900) -> str:
     import websocket
 
@@ -58,9 +65,16 @@ def execute(resources: dict, script: str, *, timeout=900) -> str:
         + "bash -c " + shlex.quote(script)
         + "; result=$?; printf '\\n" + marker + "_EXIT=%s\\n' \"$result\"; exit\n"
     )
-    connection = websocket.create_connection(
-        url, header=[f"Authorization: Bearer {token}"], timeout=15,
-    )
+    try:
+        connection = websocket.create_connection(
+            url, header=[f"Authorization: Bearer {token}"], timeout=15,
+        )
+    except websocket.WebSocketBadStatusException as error:
+        headers = error.resp_headers or {}
+        retry_after = headers.get("retry-after", "not supplied")
+        raise DemoError(
+            f"ACA exec rejected with HTTP {error.status_code}; Retry-After={retry_after}. No retry attempted."
+        ) from None
     output = ""
     deadline = time.monotonic() + timeout
     try:
@@ -86,7 +100,7 @@ def execute(resources: dict, script: str, *, timeout=900) -> str:
                         raise DemoError("ACA exec output start marker is missing")
                     body = output[start + len(marker + "_START\n"):matched.start()].strip()
                     if int(matched.group(1)):
-                        raise DemoError(f"GitLab administration failed (exit {matched.group(1)}): {body[-4000:]}")
+                        raise ExecError(int(matched.group(1)), body)
                     return body
         raise DemoError("ACA administration did not return an explicit successful exit before timeout")
     finally:
@@ -110,6 +124,13 @@ def main() -> int:
         else:
             print(output)
         return 0
+    except ExecError as error:
+        if args.output:
+            args.output.write_text(error.output + "\n", encoding="utf-8")
+            args.output.chmod(0o600)
+            print(f"Private failure diagnostics saved: {args.output}", file=sys.stderr)
+        print(str(error), file=sys.stderr)
+        return 2
     except (DemoError, ValueError, OSError, subprocess.TimeoutExpired) as error:
         print(str(error), file=sys.stderr)
         return 2

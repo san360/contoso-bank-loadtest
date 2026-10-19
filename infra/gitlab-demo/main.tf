@@ -307,7 +307,7 @@ resource "azurerm_container_app" "gitlab" {
   name                         = local.gitlab_name
   resource_group_name          = azurerm_resource_group.demo.name
   container_app_environment_id = local.active_environment_id
-  revision_mode                = "Single"
+  revision_mode                = var.gitlab_revision_mode
   max_inactive_revisions       = 1
 
   identity {
@@ -329,7 +329,7 @@ resource "azurerm_container_app" "gitlab" {
   ingress {
     external_enabled           = true
     allow_insecure_connections = false
-    target_port                = 8080
+    target_port                = 80
     transport                  = "http"
     traffic_weight {
       latest_revision = true
@@ -394,8 +394,9 @@ resource "azurerm_container_app" "gitlab" {
         sub_path = "logs"
       }
       startup_probe {
-        transport               = "TCP"
+        transport               = "HTTP"
         port                    = 9090
+        path                    = "/"
         interval_seconds        = 10
         timeout                 = 3
         failure_count_threshold = 180
@@ -410,7 +411,7 @@ resource "azurerm_container_app" "gitlab" {
       liveness_probe {
         transport               = "HTTP"
         port                    = 9090
-        path                    = "/"
+        path                    = "/live"
         interval_seconds        = 30
         timeout                 = 5
         failure_count_threshold = 10

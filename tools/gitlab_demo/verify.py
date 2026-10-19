@@ -27,6 +27,8 @@ class LoginForm(HTMLParser):
         fields = dict(attrs)
         if tag == "input" and fields.get("name") == "authenticity_token":
             self.token = fields.get("value")
+        elif tag == "meta" and fields.get("name") == "csrf-token" and self.token is None:
+            self.token = fields.get("content")
 
 
 def local_login(url: str, password: str) -> str:
@@ -65,17 +67,30 @@ def verify(folder: Path, *, wait_seconds: int = 900) -> dict:
     deadline = time.monotonic() + wait_seconds
     while True:
         try:
-            readiness = http_json(url + "/-/readiness?all=1")
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+            with urllib.request.urlopen(url + "/users/sign_in", timeout=60) as response:
+                form = LoginForm()
+                form.feed(response.read().decode("utf-8"))
+                ready = response.status == 200 and bool(form.token)
+        except urllib.error.HTTPError as error:
+            if error.code not in {404, 429, 500, 502, 503, 504}:
+                raise DemoError(f"Public sign-in endpoint returned HTTP {error.code}") from None
+            if time.monotonic() >= deadline:
+                raise DemoError(f"Public HTTPS GitLab readiness did not succeed: {error}") from None
+            time.sleep(15)
+        except (urllib.error.URLError, TimeoutError) as error:
             if time.monotonic() >= deadline:
                 raise DemoError(f"Public HTTPS GitLab readiness did not succeed: {error}") from None
             time.sleep(15)
         else:
-            break
+            if ready:
+                break
+            if time.monotonic() >= deadline:
+                raise DemoError("Public HTTPS endpoint did not serve the actual GitLab sign-in form")
+            time.sleep(15)
     username = local_login(url, credentials["gitlab_root_password"])
     report = {
         "checked_at": now(), "gitlab_url": url, "https_verified": True,
-        "readiness": readiness, "local_password_login": username,
+        "public_sign_in_status": 200, "local_password_login": username,
     }
     config_path = folder / "gitlab.json"
     if config_path.exists():

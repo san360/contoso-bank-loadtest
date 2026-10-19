@@ -1,6 +1,6 @@
 external_url ENV.fetch('GITLAB_EXTERNAL_URL')
 letsencrypt['enable'] = false
-nginx['listen_port'] = 8080
+nginx['listen_port'] = 80
 nginx['listen_https'] = false
 nginx['proxy_set_headers'] = {
   'Host' => '$http_host',

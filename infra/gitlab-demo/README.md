@@ -65,9 +65,13 @@ overlap/multiwriter risks. **Stop GitLab before an image/revision update**, pres
 the share, and then start the new revision. Do not use rolling GitLab upgrades
 or scale this proof of concept out.
 
-For maintenance, switch the app to Multiple mode, explicitly deactivate its
-current revision, and verify there are no active replicas before applying the
-new image with Terraform (which restores Single mode). The CLI does not have
+For maintenance, switch the app to Multiple mode, explicitly deactivate **all**
+active revisions, and verify there are no active replicas before applying the
+new image. Keep private `gitlab_revision_mode="Multiple"` during this stopped
+rollout; only after the new revision is genuinely healthy set it back to
+`"Single"` and apply again. Restoring Single before the replacement is healthy
+can reactivate an old "latest ready" revision, even one whose app never worked.
+Do not leave the final demo in Multiple mode. The CLI does not have
 an `az containerapp stop` command. Use `az containerapp revision set-mode --mode
 multiple` followed by `az containerapp revision deactivate --revision <exact-name>`,
 with the selected app/resource group/subscription on both commands. Do not
@@ -140,7 +144,7 @@ remote builds require no local Docker daemon. Build contexts contain no secrets:
 ```powershell
 $resources = Get-Content "$private\resources.json" -Raw | ConvertFrom-Json
 Push-Location infra\gitlab-demo\images\gitlab
-az acr build --registry $resources.registry --image gitlab:19.4.2-demo-v2 `
+az acr build --registry $resources.registry --image gitlab:19.4.2-demo-v3 `
   --platform linux/amd64 --file Dockerfile --subscription $subscription .
 Pop-Location
 Push-Location infra\gitlab-demo\images\runner
@@ -152,9 +156,14 @@ Pop-Location
 Wait for **both builds to succeed**. The image builds validate Ruby/bash syntax,
 normalize Linux line endings, and verify the runner tools/dependencies.
 The GitLab image also checks its pinned base image's actual
-`/assets/init-container` boot command and required tools. The custom entrypoint
+`/assets/init-container` boot command, supported post-reconfigure hook and required tools. The custom entrypoint
 executes that vendor command as PID 1; it does not assume the removed
 `/assets/wrapper` path or replace vendor signal handling.
+nginx listens on its standard port 80 behind ACA TLS termination; port 8080
+belongs to GitLab's loopback Puma backend and must not be used for this ingress.
+Local-auth/token bootstrap runs after the vendor reconfiguration, with its
+completion marker written by the root hook rather than the unprivileged Rails
+process. Existing bootstrap tokens are reused, never silently reissued.
 Resolve each tag's digest with `az acr repository show --image ... --query digest`
 and set private `gitlab_image_tag`/`runner_image_tag` values to
 `gitlab@sha256:...` and `runner@sha256:...`. Set `deploy_gitlab=true` in the private
@@ -165,8 +174,10 @@ Do not put secret `-var` values in process arguments.
 python -m tools.gitlab_demo.verify --private-dir $private
 ```
 
-This waits for **public HTTPS readiness and a real root local-password session**.
+This waits for **the actual public HTTPS sign-in form and a real root local-password session**.
 It does not treat an assigned hostname or successful ARM creation as app health.
+GitLab's monitoring endpoints can remain restricted to localhost; do not open
+their IP allowlist just to make an external health check green.
 The root login password is in the owner-only credential file, not this repo.
 
 Commit the implementation before seeding, then:
@@ -214,6 +225,8 @@ The optional `python -m tools.gitlab_demo.aca_exec --private-dir ... --script ..
 uses Azure-authorized, noninteractive ACA exec. It needs no public SSH port and
 keeps the Azure exec token in memory. Use `--output <private-file>` for verbose
 administration output; never embed credentials in the supplied script.
+Run these commands serially. If the exec gateway returns 429, honor its
+`Retry-After` value instead of repeatedly opening sessions or changing identity.
 
 `gitlab-backup` excludes `gitlab.rb`, TLS material and `gitlab-secrets.json`.
 `gitlab-ctl backup-etc` is **not optional**. Restoring application data without the

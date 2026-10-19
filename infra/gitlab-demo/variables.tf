@@ -42,6 +42,16 @@ variable "use_clean_environment" {
   default     = false
 }
 
+variable "gitlab_revision_mode" {
+  description = "Keep Single normally; use Multiple only during a stopped, two-phase image update."
+  type        = string
+  default     = "Single"
+  validation {
+    condition     = contains(["Single", "Multiple"], var.gitlab_revision_mode)
+    error_message = "GitLab revision mode must be Single or Multiple."
+  }
+}
+
 variable "gitlab_root_password" {
   type      = string
   sensitive = true
@@ -66,7 +76,7 @@ variable "app_admin_token" {
 
 variable "gitlab_image_tag" {
   type    = string
-  default = "gitlab:19.4.2-demo-v2"
+  default = "gitlab:19.4.2-demo-v3"
 }
 
 variable "runner_image_tag" {
