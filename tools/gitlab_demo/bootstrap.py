@@ -41,20 +41,27 @@ def initialize(args) -> None:
         raise DemoError(f"Credentials already exist at {path}; reuse them, do not overwrite cloud state")
     credentials = {
         "gitlab_root_password": secrets.token_urlsafe(36),
-        "gitlab_bootstrap_token": "glpat-" + secrets.token_hex(24),
+        "gitlab_bootstrap_token": "",
         "app_admin_token": secrets.token_urlsafe(36),
     }
+    key = folder / "gitlab-vm-admin-ed25519"
+    if not key.exists():
+        run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "contoso-gitlab-vm-admin", "-f", str(key)])
+        key.chmod(0o600)
     variables = {
         "subscription_id": args.subscription,
         "tenant_id": args.tenant,
         "location": args.location,
-        **credentials,
+        "app_admin_token": credentials["app_admin_token"],
+        "deploy_gitlab_vm": True,
+        "gitlab_vm_ssh_public_key": key.with_suffix(".pub").read_text().strip(),
     }
     write_json(path, credentials)
     write_json(folder / "demo.tfvars.json", variables)
     print(f"Owner-only credentials: {path}")
     print(f"Terraform variable file: {folder / 'demo.tfvars.json'}")
     print(f"Use local backend state path: {folder / 'terraform.tfstate'}")
+    print("Complete official GitLab first-sign-in; save the real root password and temporary bootstrap PAT privately before seed.")
 
 
 def put_variable(client: GitLab, key: str, value: str, *, secret=False) -> None:
@@ -117,6 +124,8 @@ def seed(args) -> None:
         bot.get("/repository/branches/main")
         print(f"Reusing seeded project {config['project_url']}; no tokens or projects created.")
         return
+    if not credentials.get("gitlab_bootstrap_token"):
+        raise DemoError("Save a real temporary GitLab admin bootstrap PAT in the private credential file before seeding")
     head = run(["git", "rev-parse", "HEAD"])
     if run(["git", "status", "--porcelain"]):
         raise DemoError("Commit the implementation before seeding; the source must be reproducible")

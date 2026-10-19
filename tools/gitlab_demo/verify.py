@@ -14,7 +14,7 @@ import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
 
-from .common import DemoError, GitLab, http_json, read_json, write_json
+from .common import APIError, DemoError, GitLab, http_json, read_json, write_json
 from .pipeline import now
 
 
@@ -98,15 +98,24 @@ def verify(folder: Path, *, wait_seconds: int = 900) -> dict:
         client = GitLab(url, credentials["project_token"], config["project_id"])
         deadline = time.monotonic() + 300
         while True:
-            runner = client.request("GET", f"runners/{config['runner_id']}")
-            if runner.get("status") == "online":
-                break
+            try:
+                runner = client.request("GET", f"runners/{config['runner_id']}")
+                if runner.get("status") == "online":
+                    main_sha = client.get("/repository/branches/main")["commit"]["id"]
+                    break
+                pending = f"Project runner is {runner.get('status')}"
+            except APIError as error:
+                if error.status not in {429, 500, 502, 503, 504}:
+                    raise
+                pending = f"Project repository/runner backend returned HTTP {error.status}"
+            except (urllib.error.URLError, TimeoutError) as error:
+                pending = f"Project repository/runner backend is unavailable: {type(error).__name__}"
             if time.monotonic() >= deadline:
-                raise DemoError(f"Project runner did not become online: {runner.get('status')}")
+                raise DemoError(f"Bounded project backend readiness failed: {pending}")
             time.sleep(10)
         report.update(
             project_url=config["project_url"],
-            main_sha=client.get("/repository/branches/main")["commit"]["id"],
+            main_sha=main_sha,
             runner_id=config["runner_id"], runner_status=runner["status"],
             gitlab_version=client.request("GET", "version").get("version"),
         )

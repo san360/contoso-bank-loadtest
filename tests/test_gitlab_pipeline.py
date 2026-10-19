@@ -10,12 +10,43 @@ from unittest.mock import Mock, patch
 from tools.gitlab_demo.common import DemoError, contract_digest, https_origin, write_json
 from tools.gitlab_demo.controller import file_at, gate_evidence, resume_context, wait_merge_status
 from tools.gitlab_demo.pipeline import check_mr, feature_name, functional_digest, render_test, upsert_test, verify_candidate
-from tools.gitlab_demo.aca_exec import ExecError
 from tools.gitlab_demo.azure_http import AzureAPIError
 from tools.gitlab_demo.verify import LoginForm
 
 
 class GitLabPipelineTests(unittest.TestCase):
+    def test_vm_init_exports_only_public_key_and_no_fabricated_gitlab_pat(self):
+        from types import SimpleNamespace
+        from tools.gitlab_demo.bootstrap import initialize
+        from tools.gitlab_demo.common import read_json
+
+        with tempfile.TemporaryDirectory() as directory:
+            folder = Path(directory)
+
+            def keygen(arguments):
+                self.assertEqual(arguments[0], "ssh-keygen")
+                key = Path(arguments[arguments.index("-f") + 1])
+                key.write_text("fixture-private-key")
+                key.with_suffix(".pub").write_text("ssh-ed25519 fixture-public-key")
+                return ""
+
+            with (
+                patch("tools.gitlab_demo.bootstrap.private_directory", return_value=folder),
+                patch("tools.gitlab_demo.bootstrap.run", side_effect=keygen),
+                patch("builtins.print") as output,
+            ):
+                initialize(SimpleNamespace(
+                    private_dir=folder, subscription="subscription", tenant="tenant", location="swedencentral",
+                ))
+            variables = read_json(folder / "demo.tfvars.json")
+            credentials = read_json(folder / "secrets.json")
+            self.assertTrue(variables["deploy_gitlab_vm"])
+            self.assertEqual(variables["gitlab_vm_ssh_public_key"], "ssh-ed25519 fixture-public-key")
+            self.assertNotIn("gitlab_root_password", variables)
+            self.assertNotIn("gitlab_bootstrap_token", variables)
+            self.assertEqual(credentials["gitlab_bootstrap_token"], "")
+            self.assertNotIn(credentials["gitlab_root_password"], str(output.call_args_list))
+
     def test_https_origins_exclude_credentials_and_paths(self):
         self.assertEqual(https_origin("https://demo.example/"), "https://demo.example")
         for value in ("http://demo.example", "https://u:p@demo.example", "https://demo.example/api"):
@@ -90,11 +121,6 @@ class GitLabPipelineTests(unittest.TestCase):
                          "merchant-category-v1")
         with self.assertRaises(DemoError):
             feature_name('FEATURE = str(42)')
-
-    def test_admin_errors_do_not_print_private_command_output(self):
-        failure = ExecError(1, "test-fixture-private-diagnostic")
-        self.assertEqual(failure.output, "test-fixture-private-diagnostic")
-        self.assertNotIn("test-fixture-private-diagnostic", str(failure))
 
     def test_login_parser_accepts_the_real_input_or_csrf_meta(self):
         form = LoginForm()

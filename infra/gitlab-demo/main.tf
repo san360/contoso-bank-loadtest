@@ -9,7 +9,6 @@ locals {
   active_environment_id     = var.use_clean_environment ? azurerm_container_app_environment.clean[0].id : azurerm_container_app_environment.demo.id
   active_environment_domain = var.use_clean_environment ? azurerm_container_app_environment.clean[0].default_domain : azurerm_container_app_environment.demo.default_domain
   gitlab_name               = var.use_clean_environment ? "gitlab-clean" : "gitlab"
-  gitlab_storage_name       = var.use_clean_environment ? azurerm_container_app_environment_storage.clean[0].name : azurerm_container_app_environment_storage.gitlab.name
   gitlab_url                = "https://${local.gitlab_name}.${local.active_environment_domain}"
   app_settings = {
     SCM_DO_BUILD_DURING_DEPLOYMENT      = "true"
@@ -140,8 +139,8 @@ data "azurerm_resources" "diagnostic_job" {
   type                = "Microsoft.App/jobs"
 }
 
-# Experimental only: GitLab explicitly advises against Azure Files/NFS.
-# ACA NFS has no in-transit encryption; only this VNet can reach the share.
+# Retained original migration archives, never live GitLab repository storage.
+# Keep declarations during code cleanup; this VNet alone can reach the NFS share.
 resource "azurerm_storage_account" "gitlab" {
   name                            = "stgitlab${local.token}"
   location                        = var.location
@@ -159,7 +158,8 @@ resource "azurerm_storage_account" "gitlab" {
     bypass         = ["AzureServices"]
     virtual_network_subnet_ids = concat(
       [azurerm_subnet.aca.id],
-      var.use_clean_environment ? [azurerm_subnet.clean[0].id] : []
+      var.use_clean_environment ? [azurerm_subnet.clean[0].id] : [],
+      var.deploy_gitlab_vm ? [azurerm_subnet.gitlab_vm[0].id] : []
     )
   }
 
@@ -334,6 +334,7 @@ resource "azurerm_container_app" "gitlab" {
   resource_group_name          = azurerm_resource_group.demo.name
   container_app_environment_id = local.active_environment_id
   revision_mode                = var.gitlab_revision_mode
+  workload_profile_name        = "Consumption"
   max_inactive_revisions       = 1
 
   identity {
@@ -343,14 +344,6 @@ resource "azurerm_container_app" "gitlab" {
   registry {
     server   = azurerm_container_registry.demo.login_server
     identity = azurerm_user_assigned_identity.gitlab.id
-  }
-  secret {
-    name  = "root-password"
-    value = var.gitlab_root_password
-  }
-  secret {
-    name  = "bootstrap-token"
-    value = var.gitlab_bootstrap_token
   }
   ingress {
     external_enabled           = true
@@ -367,77 +360,39 @@ resource "azurerm_container_app" "gitlab" {
     max_replicas                     = 1
     termination_grace_period_seconds = 120
 
-    volume {
-      name          = "gitlab"
-      storage_name  = local.gitlab_storage_name
-      storage_type  = "NfsAzureFile"
-      mount_options = "nfsvers=4.1,hard,timeo=600,retrans=2"
-    }
-    init_container {
-      name    = "prepare-storage"
-      image   = "${azurerm_container_registry.demo.login_server}/${var.gitlab_image_tag}"
+    container {
+      name    = "gitlab"
+      image   = "${azurerm_container_registry.demo.login_server}/${var.gitlab_proxy_image}"
       cpu     = 0.25
       memory  = "0.5Gi"
       command = ["/bin/sh", "-ec"]
-      args    = ["mkdir -p /storage/config /storage/data /storage/logs"]
-      volume_mounts {
-        name = "gitlab"
-        path = "/storage"
-      }
-    }
-    container {
-      name  = "gitlab"
-      image = "${azurerm_container_registry.demo.login_server}/${var.gitlab_image_tag}"
-      # The init container and main container together must fit Consumption's 4/8 limit.
-      cpu    = 3.75
-      memory = "7.5Gi"
+      args    = ["printf '%s\\n' \"$NGINX_CONFIG\" > /etc/nginx/nginx.conf; exec /docker-entrypoint.sh nginx -g 'daemon off;'"]
 
       env {
-        name  = "GITLAB_EXTERNAL_URL"
-        value = local.gitlab_url
-      }
-      env {
-        name        = "GITLAB_ROOT_PASSWORD"
-        secret_name = "root-password"
-      }
-      env {
-        name        = "GITLAB_BOOTSTRAP_TOKEN"
-        secret_name = "bootstrap-token"
-      }
-      volume_mounts {
-        name     = "gitlab"
-        path     = "/etc/gitlab"
-        sub_path = "config"
-      }
-      volume_mounts {
-        name     = "gitlab"
-        path     = "/var/opt/gitlab"
-        sub_path = "data"
-      }
-      volume_mounts {
-        name     = "gitlab"
-        path     = "/var/log/gitlab"
-        sub_path = "logs"
+        name = "NGINX_CONFIG"
+        value = templatefile("${path.module}/nginx-vm.conf.tftpl", {
+          private_ip = azurerm_network_interface.gitlab_vm[0].private_ip_address
+        })
       }
       startup_probe {
         transport               = "HTTP"
-        port                    = 9090
-        path                    = "/"
+        port                    = 80
+        path                    = "/users/sign_in"
         interval_seconds        = 10
         timeout                 = 3
         failure_count_threshold = 180
       }
       readiness_probe {
         transport        = "HTTP"
-        port             = 9090
-        path             = "/"
+        port             = 80
+        path             = "/users/sign_in"
         interval_seconds = 10
         timeout          = 3
       }
       liveness_probe {
         transport               = "HTTP"
-        port                    = 9090
-        path                    = "/live"
+        port                    = 80
+        path                    = "/healthz"
         interval_seconds        = 30
         timeout                 = 5
         failure_count_threshold = 10
@@ -455,6 +410,7 @@ resource "azurerm_container_app" "runner" {
   resource_group_name          = azurerm_resource_group.demo.name
   container_app_environment_id = local.active_environment_id
   revision_mode                = "Single"
+  workload_profile_name        = "Consumption"
   max_inactive_revisions       = 1
   identity {
     type         = "UserAssigned"

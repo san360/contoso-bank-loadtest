@@ -15,7 +15,7 @@ It contains a documented session agenda, a purpose-built banking API with delibe
 | [`loadtests/`](./loadtests) | JMeter, Locust, URL-based and cURL-based tests, plus YAML configs and test data. [`config-private/`](./loadtests/config-private) holds the VNet-injected definition, kept out of the auto-provisioned set because it needs an environment-specific subnet ID |
 | [`infra/`](./infra) | Terraform IaC used by `azd up` |
 | [`.github/workflows/`](./.github/workflows) | GitHub Actions performance gate (OIDC, no stored secrets) |
-| [`.gitlab-ci.yml`](./.gitlab-ci.yml) + [`infra/gitlab-demo/`](./infra/gitlab-demo) | Optional, isolated **experimental Container Apps-only GitLab demo**: real feature MR, measured red gate, scripted batching fix, green gate and promotion of the exact tested artifact. [Setup, persistence caveats, costs and cleanup](./infra/gitlab-demo/README.md) |
+| [`.gitlab-ci.yml`](./.gitlab-ci.yml) + [`infra/gitlab-demo/`](./infra/gitlab-demo) | Optional, isolated **GitLab CE VM demo** with managed SSD, stateless ACA front door and ACA runner: real feature MR, measured red gate, scripted batching fix, green gate and exact tested-artifact promotion. [Setup, architecture, protection, costs and cleanup](./infra/gitlab-demo/README.md) |
 | [`tools/`](./tools) | `azd up` load-test provisioning hooks, [`run_loadtest.ps1`/`.sh`](./tools) one-command test runners, [`provision_private_loadtest.ps1`](./tools/provision_private_loadtest.ps1) VNet-injected test with subnet pre-flight, [`compare_runs.ps1`](./tools/compare_runs.ps1) before/after run comparison, [`e2e-test.ps1`](./tools/e2e-test.ps1) end-to-end validation, hostname retargeting, VUH costing, and the harness that proves the planted bottlenecks actually bite |
 
 ---

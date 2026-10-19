@@ -6,6 +6,13 @@ output "demo" {
     location                 = var.location
     gitlab_url               = local.gitlab_url
     gitlab_app_name          = local.gitlab_name
+    gitlab_hosting           = "vm-with-stateless-aca-proxy"
+    gitlab_vm_name           = var.deploy_gitlab_vm ? azurerm_linux_virtual_machine.gitlab[0].name : null
+    gitlab_vm_id             = var.deploy_gitlab_vm ? azurerm_linux_virtual_machine.gitlab[0].id : null
+    gitlab_vm_private_ip     = var.deploy_gitlab_vm ? azurerm_network_interface.gitlab_vm[0].private_ip_address : null
+    gitlab_data_disk_id      = var.deploy_gitlab_vm ? azurerm_managed_disk.gitlab_data[0].id : null
+    gitlab_vm_lock_id        = var.gitlab_vm_readonly_lock ? azurerm_management_lock.gitlab_vm[0].id : null
+    gitlab_data_disk_lock_id = var.deploy_gitlab_vm ? azurerm_management_lock.gitlab_data[0].id : null
     registry                 = azurerm_container_registry.demo.name
     registry_server          = azurerm_container_registry.demo.login_server
     environment              = var.use_clean_environment ? azurerm_container_app_environment.clean[0].name : azurerm_container_app_environment.demo.name

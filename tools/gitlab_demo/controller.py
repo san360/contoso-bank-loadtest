@@ -233,6 +233,8 @@ def execute(folder: Path, resume_source_sha: str | None = None) -> dict:
             if resume_source_sha:
                 base, iid, red_sha = resume_context(client, report, resume_source_sha)
                 write_json(folder / f"demo-run-stopped-{report['red_sha'][:8]}.json", report)
+                report["previous_stop_reason"] = report.pop("reason", None)
+                report["previous_stopped_at"] = report.pop("finished_at", None)
                 report.update(
                     status="resuming_explicit_repair", resumed_at=now(),
                     previous_red_sha=report["red_sha"], red_sha=red_sha,
