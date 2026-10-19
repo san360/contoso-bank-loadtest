@@ -106,9 +106,12 @@ performance_gate:
     - az load test show --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --query '{testId:testId,metricsReferenceIdentityType:metricsReferenceIdentityType,criteria:passFailCriteria}' --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json
     - echo "=== Monitor the ACTUAL staging slot and SHARED S1 plan ==="
     - |
-      az load test app-component add --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
-        --test-id "$TEST_ID" --app-component-id "$STAGING_RESOURCE_ID" --app-component-name "$APP_NAME/staging" \
-        --app-component-type Microsoft.Web/sites/slots --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o none
+      az load test app-component list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
+        --test-id "$TEST_ID" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > demo-evidence/app-components.json
+      # load 2.1's add validator derives only Microsoft.Web/sites from a slot ID.
+      # Reuse the correctly prepared SLOT binding; NEVER substitute production.
+      jq -e --arg id "$STAGING_RESOURCE_ID" '.components|with_entries(.key|=ascii_downcase)|has($id|ascii_downcase)' demo-evidence/app-components.json
+      echo "Reusing actual staging-slot binding; native CLI 2.1 cannot add that nested resource type correctly."
     - |
       az load test app-component add --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
         --test-id "$TEST_ID" --app-component-id "$APP_SERVICE_PLAN_ID" --app-component-name "Shared S1 plan" \
@@ -122,7 +125,15 @@ performance_gate:
           --only-show-errors -o json > "demo-evidence/metric-definitions-$scope.json"
       done
       python -m tools.gitlab_demo.pipeline monitoring-input
+      az load test server-metric list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
+        --test-id "$TEST_ID" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > demo-evidence/metrics-before.json
       while IFS=$'\t' read -r metric_id resource_id resource_type namespace name aggregation; do
+        if jq -e --arg id "$metric_id" '.metrics|with_entries(.key|=ascii_downcase)|has($id|ascii_downcase)' demo-evidence/metrics-before.json >/dev/null; then
+          echo "Reusing prepared metric definition $name ($resource_type)"; continue
+        fi
+        if [ "$resource_type" = Microsoft.Web/sites/slots ]; then
+          echo "Missing prepared slot metric $name; native CLI 2.1 nested-type validator cannot configure it safely"; exit 2
+        fi
         echo "\$ az load test server-metric add --metric-name $name --aggregation $aggregation"
         az load test server-metric add --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
           --test-id "$TEST_ID" --metric-id "$metric_id" --app-component-id "$resource_id" \
