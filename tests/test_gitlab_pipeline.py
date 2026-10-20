@@ -211,7 +211,8 @@ class GitLabPipelineTests(unittest.TestCase):
     def test_azure_commands_are_visible_and_the_whole_gate_stays_locked(self):
         import yaml
         from tools.gitlab_demo.common import ROOT
-        document = yaml.safe_load((ROOT / ".gitlab-ci.yml").read_text())
+        primary = yaml.safe_load((ROOT / ".gitlab-ci.yml").read_text())
+        document = {**yaml.safe_load((ROOT / ".gitlab" / "advanced.yml").read_text()), **primary}
         gate = "\n".join(document["performance_gate"]["script"])
         for command in (
             "az login --identity", "az account set", "az webapp deploy", "az load test list",
@@ -226,13 +227,16 @@ class GitLabPipelineTests(unittest.TestCase):
         self.assertIn("set -euo pipefail", document["default"]["before_script"])
         self.assertEqual(document["performance_gate"]["resource_group"], document["promote_tested_slot"]["resource_group"])
         self.assertIn("az webapp deployment slot swap", "\n".join(document["promote_tested_slot"]["script"]))
-        basic = "\n".join(document["cli_walkthrough"]["before_script"] + document["cli_walkthrough"]["script"])
+        names = ("deploy_load_test", "run_load_test", "view_results_metrics", "view_logs")
+        basic = "\n".join(primary[".cli_stage"]["before_script"] + [
+            line for name in names for line in primary[name]["script"]
+        ])
         self.assertNotIn("python", basic.lower())
         self.assertNotIn("az webapp deploy", basic)
         self.assertNotIn("/admin/reset", basic)
         self.assertIn('DEPLOYED_SHA=$(jq', basic)
         self.assertIn("verdict.jq", basic)
-        self.assertEqual(document["cli_walkthrough"]["resource_group"], document["performance_gate"]["resource_group"])
+        self.assertEqual(document["run_load_test"]["resource_group"], document["performance_gate"]["resource_group"])
 
     def test_console_sanitizer_removes_url_queries_and_private_headers(self):
         result = sanitize("GET https://example.test/log?sv=fixture&sig=private\nAuthorization: Bearer private\nsafe engine started")

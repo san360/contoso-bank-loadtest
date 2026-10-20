@@ -81,15 +81,19 @@ class MetricsTsvTests(unittest.TestCase):
 
     def test_primary_and_advanced_use_same_console_projection_and_keep_json(self):
         document = yaml.safe_load((ROOT / ".gitlab-ci.yml").read_text())
-        for name in ("cli_walkthrough", "performance_gate"):
-            script = "\n".join(document[name]["script"])
+        advanced = yaml.safe_load((ROOT / ".gitlab" / "advanced.yml").read_text())
+        primary_script = "\n".join(
+            line for name in ("run_load_test", "view_results_metrics") for line in document[name]["script"]
+        )
+        for script in (primary_script, "\n".join(advanced["performance_gate"]["script"])):
             for view in ("requests", "client", "server", "definitions", "components"):
                 self.assertIn("--arg view " + view, script)
             self.assertIn("-o json > demo-evidence/client-metric-series.json", script)
             self.assertIn("-o json > demo-evidence/server-metric-definitions.json", script)
-            self.assertEqual(document[name]["artifacts"]["when"], "always")
-            self.assertEqual(document[name]["resource_group"], "contoso-gitlab-demo-staging")
-        self.assertNotIn("python", "\n".join(document["cli_walkthrough"]["script"]).lower())
+        self.assertEqual(document[".cli_stage"]["artifacts"]["when"], "always")
+        self.assertEqual(advanced["performance_gate"]["artifacts"]["when"], "always")
+        self.assertEqual(document["run_load_test"]["resource_group"], advanced["performance_gate"]["resource_group"])
+        self.assertNotIn("python", primary_script.lower())
 
 
 if __name__ == "__main__":

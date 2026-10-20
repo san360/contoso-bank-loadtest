@@ -1,25 +1,39 @@
-# GitLab: Azure Load Testing with visible Azure CLI commands
+# Four-stage Azure Load Testing CLI demo
 
-**Start here:** in GitLab, select **Build > Pipelines > Run pipeline**, choose
-protected `main`, and run. The single **`cli_walkthrough`** job has **zero Python
-commands**: only Azure CLI, Bash, jq, curl, unzip and sed. It targets the already
-prepared staging app, with no application redeploy/reset/promotion. API validation
-uses `DEMO_CLI_WALKTHROUGH=true`; that mode is mutually exclusive with promotion.
-Correlation uses the actual staging `/version` SHA, not the pipeline commit.
-Prerequisite: the test/SUT is already prepared with the actual staging slot,
-shared plan and seven monitoring definitions from demo onboarding. The advanced
-MR path validates these and can add supported plan metrics. The walkthrough
-verifies they survive upsert; a first-ever test creation
-does not magically create those bindings and will fail the prerequisite check
-until monitoring is prepared.
-The existing ALT system-assigned monitoring identity is retained and shown.
-Load 2.1's `--metrics-reference-id None` validator rejects that documented
-sentinel, so the walkthrough does not send it or use a hidden REST workaround.
-Its add-component validator also parses a slot ID as parent `Microsoft.Web/sites`
-and rejects the correct `Microsoft.Web/sites/slots` type. The existing correctly
-prepared slot/metric bindings are therefore reused and verified with native
-list commands. Missing slot bindings fail loudly; production is never attached
-as a substitute. Actual slot samples still come from native Azure Monitor CLI.
+In GitLab, select **Build > Pipelines > Run pipeline**, choose protected `main`,
+and run. Open the four boxes from left to right:
+
+```text
+deploy_load_test -> run_load_test -> view_results_metrics -> view_logs
+```
+
+| Stage / job | What to say to the audience | Main visible CLI command |
+|---|---|---|
+| `deploy_load_test` | "Deploy the load-test definition from the YAML and URL-request JSON in the repo." | `az load test update --load-test-config-file ...` |
+| `run_load_test` | "Run that test and wait for a measured pass/fail result." | `az load test-run create` followed by `az load test-run show` |
+| `view_results_metrics` | "Read the request statistics, client metrics and actual server metrics as TSV." | `az load test-run metrics list` and `az monitor metrics list` |
+| `view_logs` | "Download the result/report/engine logs and inspect correlated application logs." | `az load test-run download-files --result --log --report` and `az monitor log-analytics query` |
+
+The root [`.gitlab-ci.yml`](../.gitlab-ci.yml) is the presenter script. Every
+Azure operation is visible there; none of these four jobs invokes Python.
+The shared setup only signs in with managed identity in each job's isolated
+CLI profile. The complex feature/MR path is separate in
+[`.gitlab/advanced.yml`](../.gitlab/advanced.yml) and does not run in this demo.
+
+This tests the **already-prepared staging application**. It does not redeploy,
+reset or promote the application. The test ID, 40-row request, 12 users,
+90-second duration and p95/error thresholds stay unchanged. The existing ALT
+resource/test, staging slot, shared plan, seven monitoring definitions and reader
+roles are prerequisites; use `create` once at onboarding for a new test, not
+an implicit create-on-error fallback. The presenter pipeline updates that
+prepared test and reuses its correct slot bindings.
+
+One `run-id.txt` artifact carries the exact `cli-<pipeline-id>` through all four
+jobs; result/log readers never ask for "latest." They run with `when: always`
+and retain artifacts even when the measured run fails. A failed gate remains
+nonzero: the viewers do not turn a failed load test into a successful pipeline.
+An unavailable metric query is visible as a failed viewing job; empty series
+remain `no samples`, and asynchronous app-log availability is labelled explicitly.
 
 ## CI/CD workflow and trigger scenarios
 
@@ -38,8 +52,8 @@ branch, issue or fork.
 | Performance gate fails | The MR pipeline fails | Merge is blocked; retain results/logs. No production swap. A code fix on the same eligible MR triggers fresh CI. |
 | Merge a green MR into `main` | The merge's ordinary push event is filtered | **Merge alone does not deploy production.** This also allows CI/documentation-only changes without a swap. |
 | External demo controller explicitly requests promotion after verified green + fast-forward merge | API pipeline on `main` with `DEMO_PROMOTE_SHA`, `DEMO_GATE_JOB_ID` and `DEMO_MR_IID` | Only `promote_tested_slot`; revalidate the current merged SHA/latest green gate and ALT pass, then swap the exact tested staging slot without rebuilding. |
-| Select **Run pipeline** on protected `main` in GitLab | `web` pipeline, with `DEMO_PROMOTE_SHA` empty | Only `cli_walkthrough`; test the prepared staging app and show TSV metrics/logs. No application deploy, reset or promotion. |
-| An authorized caller requests a basic run using the API | `api` pipeline on `main`, `DEMO_CLI_WALKTHROUGH=true`, `DEMO_PROMOTE_SHA` empty | The same single `cli_walkthrough` job. API invocation remains an API event; it does not pretend to be a UI/web event. |
+| Select **Run pipeline** on protected `main` in GitLab | `web` pipeline, with `DEMO_PROMOTE_SHA` empty | The four presenter stages above. No application deploy, reset or promotion. |
+| An authorized caller requests a basic run using the API | `api` pipeline on `main`, `DEMO_CLI_WALKTHROUGH=true`, `DEMO_PROMOTE_SHA` empty | The same four-stage pipeline. API invocation remains an API event; it does not pretend to be a UI/web event. |
 | A schedule, tag, external trigger-token event, or automatic issue webhook | Not configured / filtered | A future extension would need reviewed workflow/job rules and credential/runner protections; it is not active in this deployment. |
 
 The two API modes are mutually exclusive: walkthrough needs an empty
@@ -87,27 +101,35 @@ managed feature MR, green/merge does not secretly start that controller.
 The existing completed MR1 and CI-only MR2 are retained examples; do not reset
 or replay them merely to inspect this workflow.
 
-All staging users (`performance_gate`, `cli_walkthrough`, promotion) share
-`resource_group: contoso-gitlab-demo-staging`, so their staging intervals cannot
-interleave. The unchanged load gate requires p95 <= 500 ms and errors <= 1%,
+The definition and run jobs each use `resource_group: contoso-gitlab-demo-staging`;
+that is **not a pipeline-wide lock between jobs**. Before creation, the run job
+holds that shared lock while it rechecks the definition, downloads/compares the
+actual uploaded URL profile, verifies the monitored slot/plan bindings and probes
+the prepared application's version. It keeps the lock through the measurement,
+settled verdict and final version probe. If something changed between definition
+and run, it fails rather than silently testing a different profile. The viewer
+jobs are read-only and use the immutable run ID, captured source SHA and time
+window; they do not need the staging lock.
+
+The advanced MR `performance_gate` still holds its original contiguous lock
+from candidate deployment through measurement/evidence, and promotion uses the
+same lock. The unchanged load gate requires p95 <= 500 ms and errors <= 1%,
 with settled numeric criteria; DONE/NOT_APPLICABLE alone cannot pass.
 JSON evidence and result/log/report downloads remain job artifacts on failure
 as well as success. Optional asynchronous server/log telemetry is explicitly
 labelled when unavailable, never fabricated.
 
-Open [`.gitlab-ci.yml`](../.gitlab-ci.yml), then the `cli_walkthrough` log.
-Azure operations are ordinary `az` commands in separate script entries, with
-safe explicit labels inside the few loops. No Python Azure gate/deployment
-wrapper or global shell tracing is used.
-
-The walkthrough demonstrates native identity login, version-controlled test
-create/update, binding readback, real run/poll/strict jq verdict, downloads and
-sanitized engine log excerpt, client/server samples and correlated KQL logs.
+Open each stage's log to follow the native commands; shared JSON artifacts carry
+the handoff between stages. No Python Azure gate/deployment wrapper or global
+shell tracing is used. Native `test-run create` waits for completion; a short
+bounded read loop only waits for numeric aggregate/criterion evidence to settle.
 `loadtests/gitlab-demo/verdict.jq` is a small pure JSON filter, not an Azure
 wrapper. Functional checks exercise it against actual historical red data,
 NOT_APPLICABLE, cancelled, criteria-less and contradictory examples.
 
-**Advanced:** `performance_gate` remains the exact-artifact MR regression path.
+## Optional advanced feature/MR path
+
+The separately included `performance_gate` remains the exact-artifact MR regression path.
 Its Azure operations are also direct native CLI. It additionally demonstrates:
 
 1. `az login --identity`, `az account set` and `az account show`.
@@ -155,7 +177,7 @@ and log-analytics 1.0.0b3. Its explicit test environment also pins PyYAML 6.0.3.
 
 ### Readable TSV in the console
 
-Both jobs project the saved JSON into headered TSV with small, local
+The results stage and advanced gate project saved JSON into headered TSV with small, local
 `jq -r --arg view ... -f loadtests/gitlab-demo/metrics-tsv.jq` commands.
 No extra Azure query or load run is needed to change the presentation:
 the complete original JSON remains the gate input and downloadable artifact.
@@ -171,7 +193,7 @@ only after the headered projection, not to the JSON artifacts.
 
 Reference: [Microsoft's Azure Load Testing CLI CI/CD guide](https://learn.microsoft.com/azure/app-testing/load-testing/how-to-configure-load-test-cicd).
 
-## Verified TSV pipeline run (2026-10-20)
+## Historical single-job TSV run (2026-10-20, before the four-stage revision)
 
 The requested fresh run is
 [pipeline10](https://gitlab-clean.greenpond-7c00b83b.swedencentral.azurecontainerapps.io/root/contoso-bank/-/pipelines/10),
@@ -201,7 +223,7 @@ from producing pipeline8 before and after the test. Production remained source
 `39ab1f106620b71cda89ec31b48c3f692c7f5042` from pipeline3. Pipeline code SHA,
 deployed staging SHA and production SHA are intentionally distinct here.
 
-## Verified live execution (2026-10-19)
+## Historical single-job execution (2026-10-19)
 
 [CI-only MR2](https://gitlab-clean.greenpond-7c00b83b.swedencentral.azurecontainerapps.io/root/contoso-bank/-/merge_requests/2)
 was fast-forward merged only after the advanced native-CLI

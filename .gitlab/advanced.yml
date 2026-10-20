@@ -1,0 +1,246 @@
+# Optional advanced feature/MR path, separate from the four presenter stages.
+.mr_only:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+functional_tests:
+  extends: .mr_only
+  stage: validate
+  timeout: 5m
+  script:
+    - python -m unittest discover -s tests -v
+    - jq --version
+    - command -v unzip
+    - az extension show --name load --query version -o tsv
+    - az extension show --name log-analytics --query version -o tsv
+    - jq -f loadtests/gitlab-demo/verdict.jq tests/fixtures/gitlab-alt-historical-red.json | jq -e '.outcome=="performance_failed" and .p95_ms==1250 and .error_pct==0'
+    - jq '.testResult="NOT_APPLICABLE"' tests/fixtures/gitlab-alt-historical-red.json | jq -f loadtests/gitlab-demo/verdict.jq | jq -e '.outcome=="pending"'
+    - jq '.status="CANCELLED"' tests/fixtures/gitlab-alt-historical-red.json | jq -f loadtests/gitlab-demo/verdict.jq | jq -e '.outcome=="unjudgeable"'
+    - jq '.status="VALIDATION_FAILURE"' tests/fixtures/gitlab-alt-historical-red.json | jq -f loadtests/gitlab-demo/verdict.jq | jq -e '.outcome=="unjudgeable"'
+    - jq 'del(.passFailCriteria)' tests/fixtures/gitlab-alt-historical-red.json | jq -f loadtests/gitlab-demo/verdict.jq | jq -e '.outcome=="unjudgeable"'
+    - jq '.testRunStatistics.Total.pct2ResTime=200' tests/fixtures/gitlab-alt-historical-red.json | jq -f loadtests/gitlab-demo/verdict.jq | jq -e '.outcome=="unjudgeable"'
+
+candidate_artifact:
+  extends: .mr_only
+  stage: package
+  timeout: 5m
+  script:
+    - python -m tools.gitlab_demo.pipeline build
+  artifacts:
+    expire_in: 30 days
+    paths: [dist/candidate.zip, dist/candidate.json]
+
+# ONE lock covers deploy -> exact SHA -> reset/warm -> load -> evidence.
+performance_gate:
+  extends: .mr_only
+  stage: performance
+  timeout: 40m
+  variables:
+    RUNNER_SCRIPT_TIMEOUT: 35m
+    RUNNER_AFTER_SCRIPT_TIMEOUT: 3m
+  resource_group: contoso-gitlab-demo-staging
+  needs: [functional_tests, candidate_artifact]
+  script:
+    - |
+      mkdir -p demo-evidence
+      # The EXIT handler only interprets local JSON/checks GitLab/SUT provenance.
+      # It performs NO Azure calls; every Azure operation is visible below.
+      trap 'code=$?; trap - EXIT; set +e; python -m tools.gitlab_demo.pipeline finish --exit-code "$code"; exit $?' EXIT
+      python -m tools.gitlab_demo.pipeline prepare
+      source demo-evidence/gate.env
+    - echo "=== Managed identity login in this job's private CLI profile ==="
+    - az login --identity --client-id "$AZURE_CLIENT_ID" --allow-no-subscriptions --only-show-errors -o none
+    # Safe here ONLY because AZURE_CONFIG_DIR is unique to this job.
+    - az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+    - az account show --query '{subscription_id:id,tenant_id:tenantId}' -o json | tee demo-evidence/azure-auth.json
+    - jq -e --arg s "$AZURE_SUBSCRIPTION_ID" --arg t "$AZURE_TENANT_ID" '.subscription_id==$s and .tenant_id==$t' demo-evidence/azure-auth.json
+    - echo "=== Deploy the exact candidate ZIP to STAGING (not production) ==="
+    - |
+      az webapp deploy --resource-group "$AZURE_RESOURCE_GROUP" --name "$APP_NAME" \
+        --slot staging --src-path dist/candidate.zip --type zip --clean true --restart true \
+        --async true --track-status false --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o none
+    - echo "=== Exact source/pipeline probe, fixed settings, private admin reset and warm-up ==="
+    - python -m tools.gitlab_demo.pipeline warm
+    - jq '{source_sha,pipeline_id,feature}' demo-evidence/version.json
+    - echo "=== Create or update the version-controlled load-test YAML ==="
+    - |
+      echo '$ az load test list --query "[?testId==... ] | length(@)"'
+      count=$(az load test list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
+        --query "[?testId=='$TEST_ID'] | length(@)" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o tsv)
+      case "$count" in
+        0) operation=create ;;
+        1) operation=update ;;
+        *) echo "Unexpected test inventory; refusing upsert"; exit 2 ;;
+      esac
+      echo "\$ az load test $operation --test-id $TEST_ID --load-test-config-file demo-evidence/input/transactions.yaml"
+      az load test "$operation" --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
+        --test-id "$TEST_ID" --load-test-config-file demo-evidence/input/transactions.yaml \
+        --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o none
+    - az load test show --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --query '{testId:testId,metricsReferenceIdentityType:metricsReferenceIdentityType,criteria:passFailCriteria}' --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json
+    - echo "=== Monitor the ACTUAL staging slot and SHARED S1 plan ==="
+    - |
+      az load test app-component list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
+        --test-id "$TEST_ID" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > demo-evidence/app-components.json
+      # load 2.1's add validator derives only Microsoft.Web/sites from a slot ID.
+      # Reuse the correctly prepared SLOT binding; NEVER substitute production.
+      jq -e --arg id "$STAGING_RESOURCE_ID" '.components|with_entries(.key|=ascii_downcase)|has($id|ascii_downcase)' demo-evidence/app-components.json
+      echo "Reusing actual staging-slot binding; native CLI 2.1 cannot add that nested resource type correctly."
+    - |
+      az load test app-component add --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
+        --test-id "$TEST_ID" --app-component-id "$APP_SERVICE_PLAN_ID" --app-component-name "Shared S1 plan" \
+        --app-component-type Microsoft.Web/serverfarms --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o none
+    - |
+      for scope in staging shared_plan; do
+        if [ "$scope" = staging ]; then id="$STAGING_RESOURCE_ID"; else id="$APP_SERVICE_PLAN_ID"; fi
+        echo "\$ az resource show; az monitor metrics list-definitions ($scope)"
+        az resource show --ids "$id" --subscription "$AZURE_SUBSCRIPTION_ID" -o json > "demo-evidence/resource-$scope.json"
+        az monitor metrics list-definitions --resource "$id" --subscription "$AZURE_SUBSCRIPTION_ID" \
+          --only-show-errors -o json > "demo-evidence/metric-definitions-$scope.json"
+      done
+      python -m tools.gitlab_demo.pipeline monitoring-input
+      az load test server-metric list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
+        --test-id "$TEST_ID" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > demo-evidence/metrics-before.json
+      while IFS=$'\t' read -r metric_id resource_id resource_type namespace name aggregation; do
+        if jq -e --arg id "$metric_id" '.metrics|with_entries(.key|=ascii_downcase)|has($id|ascii_downcase)' demo-evidence/metrics-before.json >/dev/null; then
+          echo "Reusing prepared metric definition $name ($resource_type)"; continue
+        fi
+        if [ "$resource_type" = Microsoft.Web/sites/slots ]; then
+          echo "Missing prepared slot metric $name; native CLI 2.1 nested-type validator cannot configure it safely"; exit 2
+        fi
+        echo "\$ az load test server-metric add --metric-name $name --aggregation $aggregation"
+        az load test server-metric add --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
+          --test-id "$TEST_ID" --metric-id "$metric_id" --app-component-id "$resource_id" \
+          --app-component-type "$resource_type" --metric-namespace "$namespace" --metric-name "$name" \
+          --aggregation "$aggregation" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o none
+      done < <(jq -r '.metrics | to_entries[] | [.key,.value.resourceId,.value.resourceType,.value.metricNamespace,.value.name,.value.aggregation] | @tsv' demo-evidence/selected-server-metrics.json)
+    - az load test app-component list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > demo-evidence/app-components.json
+    - jq -r --arg view components -f loadtests/gitlab-demo/metrics-tsv.jq demo-evidence/app-components.json
+    - az load test server-metric list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > demo-evidence/server-metric-definitions.json
+    - jq -r --arg view definitions -f loadtests/gitlab-demo/metrics-tsv.jq demo-evidence/server-metric-definitions.json
+    - python -m tools.gitlab_demo.pipeline monitoring-check
+    - echo "=== Start the real 12-VU / 90-second run with UNCHANGED criteria ==="
+    - |
+      az load test-run create --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
+        --test-id "$TEST_ID" --test-run-id "$ALT_RUN_ID" --no-wait \
+        --description "GitLab pipeline $CI_PIPELINE_ID source $CI_COMMIT_SHA" \
+        --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o none
+    - |
+      echo '$ az load test-run show --query <safe numeric/verdict fields>; wait for DONE AND settled criteria'
+      deadline=$((SECONDS+1200)); settle_deadline=0; GATE_EXIT=2
+      while [ "$SECONDS" -lt "$deadline" ]; do
+        az load test-run show --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
+          --test-run-id "$ALT_RUN_ID" --query "$ALT_RUN_QUERY" \
+          --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > demo-evidence/run.json
+        if python -m tools.loadtest_gate demo-evidence/run.json --demo-contract > demo-evidence/verdict.json; then
+          GATE_EXIT=0; break
+        else
+          verdict_code=$?
+        fi
+        outcome=$(jq -r '.outcome' demo-evidence/verdict.json)
+        jq '{outcome,reason}' demo-evidence/verdict.json
+        if [ "$outcome" = performance_failed ] && [ "$verdict_code" = 1 ]; then GATE_EXIT=1; break; fi
+        if [ "$outcome" != pending ]; then break; fi
+        if [ "$(jq -r '.status' demo-evidence/run.json)" = DONE ]; then
+          if [ "$settle_deadline" = 0 ]; then settle_deadline=$((SECONDS+300)); fi
+          if [ "$SECONDS" -ge "$settle_deadline" ]; then echo "DONE verdict did not settle"; break; fi
+        fi
+        sleep 10
+      done
+      echo "=== Settled client statistics / criteria (NOT_APPLICABLE is NEVER a pass) ==="
+      cat demo-evidence/verdict.json
+    - jq -r --arg view requests -f loadtests/gitlab-demo/metrics-tsv.jq demo-evidence/run.json
+    - echo "=== Download real results, engine logs and HTML report ==="
+    - |
+      if ! az load test-run download-files --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
+        --test-run-id "$ALT_RUN_ID" --path demo-evidence/downloads --result --log --report --force \
+        --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o none 2> .download-error; then
+        echo "Required evidence download failed"; touch demo-evidence/download-failed
+        python -m tools.gitlab_demo.pipeline sanitize < .download-error
+      fi
+      echo "=== Bounded sanitized ENGINE LOG excerpt ==="
+      log_zip=""
+      if [ -d demo-evidence/downloads ]; then log_zip=$(find demo-evidence/downloads -iname '*log*.zip' -print -quit); fi
+      if [ -n "$log_zip" ]; then
+        member=$(unzip -Z1 "$log_zip" | sed -n '/\.log$/ {p;q;}')
+        if [ -n "$member" ]; then
+          unzip -p "$log_zip" "$member" > .engine-log
+          python -m tools.gitlab_demo.pipeline sanitize < .engine-log
+          rm -f .engine-log
+        else echo "Downloaded log archive has no .log member"; touch demo-evidence/download-failed; fi
+      else echo "Engine log archive unavailable; inspect download failure evidence"; touch demo-evidence/download-failed; fi
+      rm -f .download-error
+    - echo "=== Native ALT CLIENT metric time series ==="
+    - |
+      if az load test-run metrics list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
+        --test-run-id "$ALT_RUN_ID" --metric-namespace LoadTestRunMetrics --interval PT10S \
+        --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > demo-evidence/client-metric-series.json 2> .telemetry-error; then
+        jq -r --arg view client -f loadtests/gitlab-demo/metrics-tsv.jq demo-evidence/client-metric-series.json | sed -n '1,61p'
+      else
+        rm -f demo-evidence/client-metric-series.json
+        echo "Client time series unavailable (not a substituted measurement)"
+        python -m tools.gitlab_demo.pipeline sanitize < .telemetry-error
+      fi
+    - echo "=== Actual STAGING / SHARED-PLAN Azure Monitor samples and correlated app logs ==="
+    - |
+      if python -m tools.gitlab_demo.pipeline window; then
+        source demo-evidence/telemetry.env
+        for scope in staging shared_plan; do
+          if [ "$scope" = staging ]; then id="$STAGING_RESOURCE_ID"; groups="Total Average"; else id="$APP_SERVICE_PLAN_ID"; groups="Average"; fi
+          for aggregate in $groups; do
+            if [ "$scope" = shared_plan ]; then names="CpuPercentage MemoryPercentage HttpQueueLength";
+            elif [ "$aggregate" = Total ]; then names="Requests Http5xx";
+            else names="HttpResponseTime AverageMemoryWorkingSet"; fi
+            echo "\$ az monitor metrics list --metric $names --aggregation $aggregate ($scope; plan includes production)"
+            file="demo-evidence/server-metrics-$scope-$aggregate.json"
+            if az monitor metrics list --resource "$id" --metric $names --aggregation "$aggregate" --interval PT1M \
+              --start-time "$METRIC_START" --end-time "$METRIC_END" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > "$file" 2> .telemetry-error; then
+              jq -r --arg view server --arg scope "$scope" -f loadtests/gitlab-demo/metrics-tsv.jq "$file" | sed -n '1,41p'
+            else
+              rm -f "$file"; echo "Server metrics unavailable for $scope/$aggregate"
+              python -m tools.gitlab_demo.pipeline sanitize < .telemetry-error
+            fi
+          done
+        done
+        echo '$ az monitor log-analytics query (actual staging source-SHA-correlated request logs)'
+        kql="AppServiceConsoleLogs | where TimeGenerated between(datetime($METRIC_START) .. datetime($METRIC_END)) | where _ResourceId =~ '$STAGING_RESOURCE_ID' | extend request=parse_json(ResultDescription) | where tostring(request.source_sha) == '$CI_COMMIT_SHA' | project TimeGenerated, request | take 100"
+        if az monitor log-analytics query --workspace "$LOG_WORKSPACE_ID" --analytics-query "$kql" \
+          --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > demo-evidence/staging-console-logs.json 2> .telemetry-error; then
+          jq '{actual_row_count:length,first_rows:.[0:5]}' demo-evidence/staging-console-logs.json
+        else
+          rm -f demo-evidence/staging-console-logs.json; echo "App logs unavailable or still ingesting; no rows invented"
+          python -m tools.gitlab_demo.pipeline sanitize < .telemetry-error
+        fi
+      else echo "No completed run time window; server telemetry unavailable"; fi
+      rm -f .telemetry-error
+    - exit "$GATE_EXIT"
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths: [demo-evidence/, dist/candidate.json, dist/candidate.zip]
+
+promote_tested_slot:
+  stage: promote
+  timeout: 25m
+  variables:
+    RUNNER_SCRIPT_TIMEOUT: 20m
+  resource_group: contoso-gitlab-demo-staging
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH == "main" && $DEMO_PROMOTE_SHA && $DEMO_CLI_WALKTHROUGH != "true"'
+  script:
+    - mkdir -p demo-evidence
+    - echo "=== Verify merged MR/latest successful gate and exact tested staging artifact ==="
+    - python -m tools.gitlab_demo.pipeline promotion-prepare
+    - source demo-evidence/promotion.env
+    - az login --identity --client-id "$AZURE_CLIENT_ID" --allow-no-subscriptions --only-show-errors -o none
+    - az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+    - az account show --query '{subscription:id,tenant:tenantId}' -o json
+    - az load test-run show --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-run-id "$ALT_RUN_ID" --query "$ALT_RUN_QUERY" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > demo-evidence/promotion-run.json
+    - python -m tools.loadtest_gate demo-evidence/promotion-run.json --demo-contract
+    - python -m tools.gitlab_demo.pipeline promotion-prepare
+    - echo "=== Promote the TESTED slot without rebuilding ==="
+    - az webapp deployment slot swap --resource-group "$AZURE_RESOURCE_GROUP" --name "$APP_NAME" --slot staging --target-slot production --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o none
+    - python -m tools.gitlab_demo.pipeline promotion-finish
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths: [demo-evidence/]

@@ -57,9 +57,11 @@ declarations, NFS data, backup archives, MR history and evidence are retained.
 
 ## What it demonstrates
 
-The Azure path is now **CLI-first**: start with **Run pipeline on protected main**
-and the zero-Python `cli_walkthrough` job. It exercises the prepared staging app
-without redeploy/reset/promotion. The advanced MR `performance_gate` also shows
+The Azure path is now **four simple CLI stages**: use **Run pipeline on protected
+main**, then follow `deploy_load_test` -> `run_load_test` ->
+`view_results_metrics` -> `view_logs`. These zero-Python jobs exercise the
+prepared staging app without redeploy/reset/promotion. Advanced feature/MR jobs
+are separate in `.gitlab/advanced.yml`; their `performance_gate` still shows
 direct managed-identity login, candidate
 deployment, load-test upsert/run/read/download, component/metric definitions,
 client/server metrics and correlated Log Analytics queries. Engine logs are
