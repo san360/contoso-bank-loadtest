@@ -1,0 +1,35 @@
+{
+  "evidence_note": "Projection of actual historical MR1 pipeline2/job6 run; not a newly executed regression.",
+  "testRunId": "gl-2-6-d8288fea",
+  "status": "DONE",
+  "testResult": "FAILED",
+  "passFailCriteria": {
+    "passFailMetrics": {
+      "79886176-c741-4443-8ec4-7bbdf155f0fd": {
+        "action": "continue",
+        "actualValue": 0.0,
+        "aggregate": "percentage",
+        "clientMetric": "error",
+        "condition": ">",
+        "result": "passed",
+        "value": 1.0
+      },
+      "b7ea9688-f592-4021-b412-e7d489dbaed7": {
+        "action": "continue",
+        "actualValue": 1250.0,
+        "aggregate": "p95",
+        "clientMetric": "response_time_ms",
+        "condition": ">",
+        "result": "failed",
+        "value": 500.0
+      }
+    }
+  },
+  "testRunStatistics": {
+    "Total": {
+      "sampleCount": 911.0,
+      "pct2ResTime": 1250.0,
+      "errorPct": 0.0
+    }
+  }
+}

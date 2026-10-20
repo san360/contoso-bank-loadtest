@@ -1,0 +1,14 @@
+version: v0.1
+testId: contoso-gitlab-transactions
+displayName: GitLab transaction enrichment gate
+description: Read-only transaction history, unchanged between the feature and batching fix.
+testType: URL
+testPlan: transactions.json
+engineInstances: 1
+failureCriteria:
+  clientMetrics:
+    - p95(response_time_ms) > 500
+    - percentage(error) > 1
+autoStop:
+  errorPercentage: 90
+  timeWindow: 60

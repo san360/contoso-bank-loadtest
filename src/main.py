@@ -19,8 +19,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
+import json
+import logging
 import os
 import random
+import re
+import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -34,6 +39,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
+from transaction_enrichment import FEATURE, enrich_transactions
 
 # --------------------------------------------------------------------------------------
 # Optional Azure Monitor / Application Insights wiring.
@@ -441,6 +447,26 @@ app = FastAPI(
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+BUILD_INFO_FILE = Path(__file__).resolve().parent / "build-info.json"
+BUILD_INFO = (
+    json.loads(BUILD_INFO_FILE.read_text(encoding="utf-8"))
+    if BUILD_INFO_FILE.exists()
+    else {"source_sha": "local", "pipeline_id": "local"}
+)
+if BUILD_INFO["source_sha"] != "local" and not re.fullmatch(
+    r"[0-9a-f]{40}", BUILD_INFO["source_sha"]
+):
+    raise RuntimeError("build-info.json does not contain a full source commit SHA")
+DEMO_ADMIN_TOKEN = os.getenv("DEMO_ADMIN_TOKEN", "")
+REQUEST_LOGGING = _env_bool("LOG_REQUESTS", False)
+REQUEST_LOGGER = logging.getLogger("contoso.requests")
+if REQUEST_LOGGING:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    REQUEST_LOGGER.addHandler(handler)
+    REQUEST_LOGGER.setLevel(logging.INFO)
+    REQUEST_LOGGER.propagate = False
+
 STARTED_AT = time.time()
 REQUEST_COUNT = 0
 
@@ -448,6 +474,10 @@ REQUEST_COUNT = 0
 @app.middleware("http")
 async def correlation_and_timing(request: Request, call_next):
     global REQUEST_COUNT
+    if request.url.path.startswith("/admin") and DEMO_ADMIN_TOKEN:
+        supplied = request.headers.get("X-Demo-Admin-Token", "")
+        if not hmac.compare_digest(supplied.encode("utf-8"), DEMO_ADMIN_TOKEN.encode("utf-8")):
+            return JSONResponse(status_code=401, content={"error": "Admin token required"})
     REQUEST_COUNT += 1
     correlation_id = request.headers.get("X-Correlation-Id", str(uuid.uuid4()))
     started = time.perf_counter()
@@ -455,6 +485,17 @@ async def correlation_and_timing(request: Request, call_next):
     elapsed_ms = (time.perf_counter() - started) * 1000
     response.headers["X-Correlation-Id"] = correlation_id
     response.headers["X-Server-Time-Ms"] = f"{elapsed_ms:.1f}"
+    if REQUEST_LOGGING:
+        REQUEST_LOGGER.info(json.dumps({
+            "event": "http_request",
+            "source_sha": BUILD_INFO["source_sha"],
+            "pipeline_id": str(BUILD_INFO["pipeline_id"]),
+            "correlation_id": correlation_id,
+            "method": request.method,
+            "path": request.url.path,
+            "status": response.status_code,
+            "duration_ms": round(elapsed_ms, 2),
+        }, separators=(",", ":")))
     return response
 
 
@@ -561,6 +602,15 @@ async def health() -> dict[str, Any]:
 async def ready() -> dict[str, Any]:
     await DB.query("SELECT 1")
     return {"status": "ready", "accounts": len(ACCOUNTS)}
+
+
+@app.get("/version", tags=["ops"])
+async def version() -> dict[str, str]:
+    return {
+        "source_sha": BUILD_INFO["source_sha"],
+        "pipeline_id": str(BUILD_INFO["pipeline_id"]),
+        "feature": FEATURE,
+    }
 
 
 @app.get("/", response_class=FileResponse, tags=["ops"])
@@ -795,7 +845,7 @@ async def get_transactions(account_id: str, page_size: int = 20) -> dict[str, An
         "account_id": account_id,
         "count": len(rows),
         "query_pattern": "n+1" if CONFIG.enable_n_plus_one else "batched",
-        "items": [r.__dict__ for r in rows],
+        "items": await enrich_transactions([r.__dict__ for r in rows], DB.query),
     }
 
 

@@ -1,0 +1,139 @@
+# Presenter: Run pipeline on main. Advanced feature/MR automation lives separately.
+include:
+  - local: .gitlab/advanced.yml
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == "main" && $DEMO_PROMOTE_SHA == ""'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH == "main" && $DEMO_CLI_WALKTHROUGH == "true" && $DEMO_PROMOTE_SHA == ""'
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME == "demo-merchant-enrichment" && $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main" && $CI_MERGE_REQUEST_SOURCE_PROJECT_ID == $CI_PROJECT_ID'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH == "main" && $DEMO_PROMOTE_SHA && $DEMO_CLI_WALKTHROUGH != "true"'
+    - when: never
+# Empty advanced stages do not appear in the presenter pipeline.
+stages: [deploy_load_test, run_load_test, view_results_metrics, view_logs, validate, package, performance, promote]
+variables:
+  TEST_ID: contoso-gitlab-transactions
+  DEMO_CLI_WALKTHROUGH: "false"
+  DEMO_PROMOTE_SHA: ""
+  GIT_DEPTH: "0"
+  GIT_STRATEGY: clone
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  AZURE_CORE_ONLY_SHOW_ERRORS: "true"
+  ALT_RUN_QUERY: '{testRunId:testRunId,testId:testId,status:status,testResult:testResult,passFailCriteria:passFailCriteria,testRunStatistics:testRunStatistics,startDateTime:startDateTime,endDateTime:endDateTime}'
+  TEST_CONFIG_QUERY: '{modified:lastModifiedDateTime,configuration:loadTestConfiguration,criteria:passFailCriteria,metricsIdentity:metricsReferenceIdentityType}'
+default:
+  tags: [aca-demo]
+  interruptible: false
+  before_script: [set -euo pipefail, 'test "${CI_DEBUG_TRACE:-false}" != "true"', 'export AZURE_CONFIG_DIR="$CI_PROJECT_DIR/.azure-$CI_JOB_ID"', 'export PYTHONUNBUFFERED=1']
+
+.cli_stage:
+  timeout: 30m
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH == "main" && $DEMO_PROMOTE_SHA == ""'
+    - if: '$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_BRANCH == "main" && $DEMO_CLI_WALKTHROUGH == "true" && $DEMO_PROMOTE_SHA == ""'
+  before_script:
+    - set -euo pipefail
+    - test "${CI_DEBUG_TRACE:-false}" != "true"
+    - export AZURE_CONFIG_DIR="$CI_PROJECT_DIR/.azure-$CI_JOB_ID"
+    - mkdir -p demo-evidence
+    - az login --identity --client-id "$AZURE_CLIENT_ID" --allow-no-subscriptions -o none
+    - az account set --subscription "$AZURE_SUBSCRIPTION_ID"
+    - 'safe_text() { sed -E -e ''s#(https?://[^ ?"]+)\?[^ "]+#\1?[REDACTED]#g'' -e ''/[Aa]uthorization|[Pp]rivate-[Tt]oken|[Aa]ccess_[Tt]oken|IDENTITY_HEADER|MSI_SECRET/c\[REDACTED HEADER]'' "$1" | sed -n "1,${2:-12}p"; }'
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths: [demo-evidence/]
+
+deploy_load_test:
+  extends: .cli_stage
+  stage: deploy_load_test
+  resource_group: contoso-gitlab-demo-staging
+  script:
+    - mkdir -p demo-evidence/input
+    - printf 'cli-%s\n' "$CI_PIPELINE_ID" > demo-evidence/run-id.txt
+    - cp loadtests/gitlab-demo/transactions.yaml demo-evidence/input/
+    - jq --arg origin "$STAGING_URL" '.scenarios.transactions.requests[0].endpoint=$origin+"/api/accounts/ACC-1001/transactions"' loadtests/gitlab-demo/transactions.json > demo-evidence/input/transactions.json
+    - az load test update --load-test-resource "$LOAD_TEST_RESOURCE_ID" --test-id "$TEST_ID" --load-test-config-file demo-evidence/input/transactions.yaml --subscription "$AZURE_SUBSCRIPTION_ID" -o none
+    - az load test show --load-test-resource "$LOAD_TEST_RESOURCE_ID" --test-id "$TEST_ID" --query "$TEST_CONFIG_QUERY" --subscription "$AZURE_SUBSCRIPTION_ID" -o json > demo-evidence/definition.json
+
+run_load_test:
+  extends: .cli_stage
+  stage: run_load_test
+  dependencies: [deploy_load_test]
+  resource_group: contoso-gitlab-demo-staging
+  script:
+    - RUN_ID=$(cat demo-evidence/run-id.txt); test "$RUN_ID" = "cli-$CI_PIPELINE_ID"
+    # Recheck the definition/actual uploaded profile under this job's lock.
+    - az load test show --load-test-resource "$LOAD_TEST_RESOURCE_ID" --test-id "$TEST_ID" --query "$TEST_CONFIG_QUERY" --subscription "$AZURE_SUBSCRIPTION_ID" -o json > demo-evidence/definition-at-run.json
+    - diff <(jq -S . demo-evidence/definition.json) <(jq -S . demo-evidence/definition-at-run.json)
+    - az load test file download --load-test-resource "$LOAD_TEST_RESOURCE_ID" --test-id "$TEST_ID" --file-name transactions.json --path demo-evidence/verified-profile --force --subscription "$AZURE_SUBSCRIPTION_ID" -o none 2> .cli-error || { safe_text .cli-error; exit 2; }
+    - diff <(jq -S . demo-evidence/input/transactions.json) <(jq -S . demo-evidence/verified-profile/transactions.json)
+    - az load test app-component list --load-test-resource "$LOAD_TEST_RESOURCE_ID" --test-id "$TEST_ID" --subscription "$AZURE_SUBSCRIPTION_ID" -o json > demo-evidence/app-components.json
+    - az load test server-metric list --load-test-resource "$LOAD_TEST_RESOURCE_ID" --test-id "$TEST_ID" --subscription "$AZURE_SUBSCRIPTION_ID" -o json > demo-evidence/server-metric-definitions.json
+    - jq -e --arg s "$STAGING_RESOURCE_ID" --arg p "$APP_SERVICE_PLAN_ID" '.components|with_entries(.key|=ascii_downcase)|has($s|ascii_downcase) and has($p|ascii_downcase)' demo-evidence/app-components.json
+    - jq -e --arg s "$STAGING_RESOURCE_ID" --arg p "$APP_SERVICE_PLAN_ID" '.metrics|(length==7) and all(.[]; (.resourceId|ascii_downcase)==($s|ascii_downcase) or (.resourceId|ascii_downcase)==($p|ascii_downcase))' demo-evidence/server-metric-definitions.json
+    - curl --fail --silent --show-error "$STAGING_URL/version" > demo-evidence/deployed-version.json
+    - DEPLOYED_SHA=$(jq -er '.source_sha|select(test("^[0-9a-f]{40}$"))' demo-evidence/deployed-version.json)
+    # Native create waits for completion; the short loop only settles the verdict.
+    - timeout 20m az load test-run create --load-test-resource "$LOAD_TEST_RESOURCE_ID" --test-id "$TEST_ID" --test-run-id "$RUN_ID" --subscription "$AZURE_SUBSCRIPTION_ID" -o none
+    - |
+      echo '$ az load test-run show (wait for settled numeric criteria)'
+      for attempt in $(seq 1 31); do
+        az load test-run show --load-test-resource "$LOAD_TEST_RESOURCE_ID" --test-run-id "$RUN_ID" --query "$ALT_RUN_QUERY" --subscription "$AZURE_SUBSCRIPTION_ID" -o json > demo-evidence/run.json
+        jq -f loadtests/gitlab-demo/verdict.jq demo-evidence/run.json > demo-evidence/verdict.json
+        if [ "$(jq -r .outcome demo-evidence/verdict.json)" != pending ]; then break; fi
+        sleep 10
+      done
+    - jq -e --arg id "$RUN_ID" '.testRunId==$id' demo-evidence/run.json
+    - curl --fail --silent --show-error "$STAGING_URL/version" > demo-evidence/deployed-version-after.json
+    - diff <(jq -S '{source_sha,pipeline_id}' demo-evidence/deployed-version.json) <(jq -S '{source_sha,pipeline_id}' demo-evidence/deployed-version-after.json)
+    - |
+      FROM=$(date -u -d "$(jq -er .startDateTime demo-evidence/run.json)" +%s); UNTIL=$(date -u -d "$(jq -er .endDateTime demo-evidence/run.json)" +%s)
+      FROM=$(date -u -d "@$((FROM/60*60-60))" +%Y-%m-%dT%H:%M:%SZ); UNTIL=$(date -u -d "@$((UNTIL/60*60+120))" +%Y-%m-%dT%H:%M:%SZ)
+      printf 'FROM=%q\nUNTIL=%q\nDEPLOYED_SHA=%q\n' "$FROM" "$UNTIL" "$DEPLOYED_SHA" > demo-evidence/telemetry.env
+    - cat demo-evidence/verdict.json
+    - 'case "$(jq -r .outcome demo-evidence/verdict.json)" in passed) exit 0;; performance_failed) exit 1;; *) exit 2;; esac'
+
+view_results_metrics:
+  extends: .cli_stage
+  stage: view_results_metrics
+  dependencies: [run_load_test]
+  when: always
+  script:
+    - RUN_ID=$(cat demo-evidence/run-id.txt); test "$RUN_ID" = "cli-$CI_PIPELINE_ID"
+    - az load test-run show --load-test-resource "$LOAD_TEST_RESOURCE_ID" --test-run-id "$RUN_ID" --query "$ALT_RUN_QUERY" --subscription "$AZURE_SUBSCRIPTION_ID" -o json > demo-evidence/run.json
+    - jq -r --arg view requests -f loadtests/gitlab-demo/metrics-tsv.jq demo-evidence/run.json
+    - az load test-run metrics list --load-test-resource "$LOAD_TEST_RESOURCE_ID" --test-run-id "$RUN_ID" --metric-namespace LoadTestRunMetrics --interval PT10S --subscription "$AZURE_SUBSCRIPTION_ID" -o json > demo-evidence/client-metric-series.json
+    - jq -r --arg view client -f loadtests/gitlab-demo/metrics-tsv.jq demo-evidence/client-metric-series.json
+    - echo "Monitored components and metric DEFINITIONS (not measured samples)"
+    - jq -r --arg view components -f loadtests/gitlab-demo/metrics-tsv.jq demo-evidence/app-components.json
+    - jq -r --arg view definitions -f loadtests/gitlab-demo/metrics-tsv.jq demo-evidence/server-metric-definitions.json
+    - test -f demo-evidence/telemetry.env || { echo "Run has no completed measurement window; server metrics unavailable"; exit 2; }
+    - source demo-evidence/telemetry.env
+    - az monitor metrics list --resource "$STAGING_RESOURCE_ID" --metric Requests Http5xx --aggregation Total --interval PT1M --start-time "$FROM" --end-time "$UNTIL" --subscription "$AZURE_SUBSCRIPTION_ID" -o json > demo-evidence/server-metrics-staging-Total.json
+    - jq -r --arg view server --arg scope staging -f loadtests/gitlab-demo/metrics-tsv.jq demo-evidence/server-metrics-staging-Total.json
+    - az monitor metrics list --resource "$STAGING_RESOURCE_ID" --metric HttpResponseTime AverageMemoryWorkingSet --aggregation Average --interval PT1M --start-time "$FROM" --end-time "$UNTIL" --subscription "$AZURE_SUBSCRIPTION_ID" -o json > demo-evidence/server-metrics-staging-Average.json
+    - jq -r --arg view server --arg scope staging -f loadtests/gitlab-demo/metrics-tsv.jq demo-evidence/server-metrics-staging-Average.json
+    - az monitor metrics list --resource "$APP_SERVICE_PLAN_ID" --metric CpuPercentage MemoryPercentage HttpQueueLength --aggregation Average --interval PT1M --start-time "$FROM" --end-time "$UNTIL" --subscription "$AZURE_SUBSCRIPTION_ID" -o json > demo-evidence/server-metrics-shared_plan-Average.json
+    - jq -r --arg view server --arg scope shared_plan -f loadtests/gitlab-demo/metrics-tsv.jq demo-evidence/server-metrics-shared_plan-Average.json
+
+view_logs:
+  extends: .cli_stage
+  stage: view_logs
+  dependencies: [run_load_test]
+  when: always
+  script:
+    - RUN_ID=$(cat demo-evidence/run-id.txt); test "$RUN_ID" = "cli-$CI_PIPELINE_ID"
+    - az load test-run download-files --load-test-resource "$LOAD_TEST_RESOURCE_ID" --test-run-id "$RUN_ID" --path demo-evidence/downloads --result --log --report --force --subscription "$AZURE_SUBSCRIPTION_ID" -o none 2> .cli-error || { safe_text .cli-error; exit 2; }
+    - |
+      archive=$(find demo-evidence/downloads -iname '*log*.zip' -print -quit); test -n "$archive" || { echo "No engine-log archive for $RUN_ID"; exit 2; }
+      member=$(unzip -Z1 "$archive" | sed -n '/\.log$/ {p;q;}'); test -n "$member" || { echo "Engine-log archive contains no log member"; exit 2; }
+      unzip -p "$archive" "$member" > .engine-log; safe_text .engine-log 40
+    - test -f demo-evidence/telemetry.env || { echo "Run has no completed source/time-window proof; application-log query unavailable"; exit 2; }
+    - source demo-evidence/telemetry.env
+    - KQL="AppServiceConsoleLogs | where TimeGenerated between(datetime($FROM) .. datetime($UNTIL)) | where _ResourceId =~ '$STAGING_RESOURCE_ID' | extend request=parse_json(ResultDescription) | where tostring(request.source_sha) == '$DEPLOYED_SHA' | project TimeGenerated, request | take 100"
+    - |
+      if az monitor log-analytics query --workspace "$LOG_WORKSPACE_ID" --analytics-query "$KQL" --subscription "$AZURE_SUBSCRIPTION_ID" -o json > demo-evidence/staging-console-logs.json 2> .cli-error; then
+        jq '{actual_row_count:length,first_rows:.[0:5]}' demo-evidence/staging-console-logs.json
+      else
+        rm -f demo-evidence/staging-console-logs.json; echo "Application logs unavailable or still ingesting"; safe_text .cli-error
+      fi

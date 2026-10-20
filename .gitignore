@@ -38,6 +38,7 @@ src/.venv/
 # azd stores subscription IDs, resource names and per-environment settings here.
 # These files describe a live tenant/subscription and should stay local.
 .azure/
+.azure-*/
 
 # -----------------------------------------------------------------------------
 # Terraform local state and plans
@@ -52,6 +53,7 @@ crash.log
 crash.*.log
 *.tfplan
 *.tfvars
+*.tfvars.json
 !*.tfvars.example
 
 # -----------------------------------------------------------------------------
@@ -85,6 +87,8 @@ loadtests/results/
 
 # Run artefacts downloaded by tools/run_loadtest.ps1 / .sh (--download).
 .loadtest-results/
+demo-evidence/
+src/build-info.json
 
 # Local CLI demo output: downloaded logs/results may contain sensitive test data.
 .loadtest-demo/

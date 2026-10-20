@@ -1,0 +1,16 @@
+services:
+  gitlab:
+    image: gitlab/gitlab-ce:19.4.2-ce.0@sha256:b65c3ece044d125254b4c4a99b10676bbd2502f05f8c628cb60628f44f4df11b
+    container_name: gitlab
+    hostname: gitlab-vm
+    restart: unless-stopped
+    stop_grace_period: 180s
+    shm_size: "256m"
+    environment:
+      GITLAB_EXTERNAL_URL: "${GITLAB_EXTERNAL_URL:?Set the existing public HTTPS GitLab origin}"
+    ports:
+      - "10.74.4.4:80:80"
+    volumes:
+      - /srv/gitlab/config:/etc/gitlab
+      - /srv/gitlab/data:/var/opt/gitlab
+      - /srv/gitlab/logs:/var/log/gitlab
