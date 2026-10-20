@@ -75,7 +75,7 @@ az extension add --name load
 python -m tools.cli_demo
 ```
 
-Open **http://127.0.0.1:8765** and enter the tenant, subscription ID, resource group,
+Open **http://127.0.0.1:8769** and enter the tenant, subscription ID, resource group,
 Load Testing resource name, and authorized target URL. Preview each command,
 then execute **Create the small demo test**, **Start a load test run**, **Watch
 selected run**, and **Collect analysis bundle**. Starting a run requires explicit
@@ -89,7 +89,9 @@ PowerShell/Bash command, or download the step script for a terminal demo.
 
 `az account set` changes the current CLI profile. For a dedicated demo profile,
 follow the `AZURE_CONFIG_DIR` setup in [doc 26](./docs/26-cli-demo-app-and-skills.md#different-tenants-and-cli-subscription-context).
-If port 8765 is occupied, use `python -m tools.cli_demo --port 8766`.
+If port 8769 is occupied, use `python -m tools.cli_demo --port 8766` and open
+**http://127.0.0.1:8766**. Use the URL printed by the server; no source-code edits
+are needed to change the port.
 
 Press **Ctrl+C** in the server terminal to stop the local UI; this does **not**
 cancel Azure runs. Restart with the same `python -m tools.cli_demo` command.

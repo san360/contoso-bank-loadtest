@@ -34,6 +34,7 @@ from .commands import (
 
 LOG = logging.getLogger("cli_demo")
 STATIC = Path(__file__).parent / "static"
+DEFAULT_PORT = 8769
 MAX_BODY = 32 * 1024
 MAX_PLANS = 256
 PLAN_LIFETIME = 30 * 60
@@ -375,7 +376,7 @@ class App:
 class DemoServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, app: App, port: int = 8765):
+    def __init__(self, app: App, port: int = DEFAULT_PORT):
         self.app = app
         super().__init__(("127.0.0.1", port), Handler)
 
@@ -560,7 +561,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
+                        help="Local HTTP port (default: %(default)s).")
     parser.add_argument("--data-dir", type=Path, default=ROOT / ".loadtest-demo",
                         help="Local output directory; may contain sensitive downloaded artifacts.")
     args = parser.parse_args()

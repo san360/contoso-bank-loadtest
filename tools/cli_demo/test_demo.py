@@ -19,7 +19,7 @@ from tools.cli_demo.commands import (
     ACTIONS, ROOT, Config, build_commands, csv_export, metric_rows, redact, run_verdict, script_for,
     shell_command, tsv_export,
 )
-from tools.cli_demo.server import App, CliRunner, DemoServer, azure_launcher
+from tools.cli_demo.server import App, CliRunner, DemoServer, azure_launcher, main
 
 SUBSCRIPTION = "00000000-0000-0000-0000-000000000001"
 RESOURCE = f"/subscriptions/{SUBSCRIPTION}/resourceGroups/demo-rg/providers/Microsoft.Web/sites/demo-app"
@@ -713,6 +713,29 @@ class JobTests(unittest.TestCase):
         for id_ in ("..", r"..\other", "/absolute", "not-a-job"):
             with self.subTest(id=id_), self.assertRaises(ValueError):
                 self.app.artifact_directory(id_)
+
+
+class StartupTests(unittest.TestCase):
+    def test_server_default_port(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = App(Path(directory), fake_runner)
+            self.addCleanup(app.close)
+            with patch("tools.cli_demo.server.ThreadingHTTPServer.__init__", return_value=None) as initialize:
+                DemoServer(app)
+            self.assertEqual(initialize.call_args.args[0], ("127.0.0.1", 8769))
+
+    def test_cli_default_and_custom_ports(self):
+        for args, port in (([], 8769), (["--port", "8766"], 8766)):
+            with self.subTest(port=port), tempfile.TemporaryDirectory() as directory:
+                with (
+                    patch("sys.argv", ["cli-demo", "--data-dir", directory, *args]),
+                    patch("tools.cli_demo.server.DemoServer") as server,
+                    patch("tools.cli_demo.server.logging.basicConfig"),
+                    patch("builtins.print") as output,
+                ):
+                    main()
+                self.assertEqual(server.call_args.args[1], port)
+                output.assert_any_call(f"Azure Load Testing CLI demo: http://127.0.0.1:{port}", flush=True)
 
 
 class HttpTests(unittest.TestCase):

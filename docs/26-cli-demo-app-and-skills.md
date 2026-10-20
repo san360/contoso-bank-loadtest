@@ -35,11 +35,14 @@ Use `fdpo.onmicrosoft.com` as the tenant argument for the fdpo demo directory.
 `az account set` changes the active CLI profile; see the isolated-profile option
 below if other terminals use that profile.
 
-Open **http://127.0.0.1:8765** in a browser. If that port is occupied:
+Open **http://127.0.0.1:8769** in a browser. If that port is occupied:
 
 ```powershell
 python -m tools.cli_demo --port 8766
 ```
+
+Open the URL printed by the server (**http://127.0.0.1:8766** in this example).
+The `--port` option overrides the shared default; no source-code edits are needed.
 
 On macOS/Linux, use `cd contoso-bank-loadtest` instead of `Set-Location` and
 `python3` if needed. The app itself needs no additional Python packages or Node.js.
