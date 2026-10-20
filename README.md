@@ -82,10 +82,15 @@ selected run**, and **Collect analysis bundle**. Starting a run requires explici
 confirmation.
 
 The create preview generates a copy of
-[`smoke.yaml`](./loadtests/cli-demo/smoke.yaml) with the form's **Test ID**, then
-shows it beside the matching `az load test create --load-test-config-file ...`
-command. The repository template stays unchanged. Copy the YAML, copy the
+[`smoke.yaml`](./loadtests/cli-demo/smoke.yaml) with the form's **Test ID** and
+**authorized target URL**, including its host, protocol, port and path. It labels
+the unchanged source template separately from the generated file read by
+`az load test create --load-test-config-file ...`. Copy the YAML, copy the
 PowerShell/Bash command, or download the step script for a terminal demo.
+
+**List test definitions output** offers JSON or TSV. JSON results use an
+expandable, type-colored viewer with **Copy JSON**; TSV results appear as readable
+columns with a headered download and **Copy TSV**. Raw CLI output remains available.
 
 `az account set` changes the current CLI profile. For a dedicated demo profile,
 follow the `AZURE_CONFIG_DIR` setup in [doc 26](./docs/26-cli-demo-app-and-skills.md#different-tenants-and-cli-subscription-context).
