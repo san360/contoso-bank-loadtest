@@ -79,6 +79,22 @@ Secrets, access tokens, SAS response URLs and raw authorization headers are not
 printed. Runner prerequisites are pinned in its Dockerfile: jq, unzip, load 2.1.0
 and log-analytics 1.0.0b3. Its explicit test environment also pins PyYAML 6.0.3.
 
+### Readable TSV in the console
+
+Both jobs project the saved JSON into headered TSV with small, local
+`jq -r --arg view ... -f loadtests/gitlab-demo/metrics-tsv.jq` commands.
+No extra Azure query or load run is needed to change the presentation:
+the complete original JSON remains the gate input and downloadable artifact.
+Request columns are `request`, `samples`, `p95_ms`, `error_percent` and
+`throughput_rps`. Client time series label timestamps and `ms`/`count`/`users`;
+`TotalRequests` is a bucket count, **not RPS**, and `ResponseTime` points are
+not relabelled as p95. Server rows preserve the reported units and aggregation,
+with explicit `staging_slot` versus `shared_plan` scope (plan CPU includes
+production). Definition tables are labelled definitions, not measured samples.
+Real zero samples remain `0`; null buckets are omitted and empty series say
+`no samples` with `N/A`, never fabricated zeros. Console row limits apply
+only after the headered projection, not to the JSON artifacts.
+
 Reference: [Microsoft's Azure Load Testing CLI CI/CD guide](https://learn.microsoft.com/azure/app-testing/load-testing/how-to-configure-load-test-cicd).
 
 ## Verified live execution (2026-10-19)

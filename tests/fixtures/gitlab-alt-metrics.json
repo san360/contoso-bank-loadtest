@@ -1,0 +1,78 @@
+{
+  "provenance": "Selected unchanged fields/points from actual pipeline9/job23 artifacts, run cli-9-23. Missing and zero samples are original.",
+  "run": {
+    "testRunStatistics": {
+      "GetTransactions": {"transaction": "GetTransactions", "sampleCount": 5336.0, "pct2ResTime": 310.0, "errorPct": 0.0, "throughput": 56.16842105263158},
+      "Total": {"transaction": "Total", "sampleCount": 5336.0, "pct2ResTime": 310.0, "errorPct": 0.0, "throughput": 56.16842105263158}
+    }
+  },
+  "client": {
+    "Errors": [{"data": []}],
+    "ResponseTime": [{"data": [
+      {"timestamp": "2026-10-19T20:39:50.000Z", "value": 85.0},
+      {"timestamp": "2026-10-19T20:40:00.000Z", "value": 330.0}
+    ]}],
+    "TotalRequests": [{"data": [
+      {"timestamp": "2026-10-19T20:39:50.000Z", "value": 98.0},
+      {"timestamp": "2026-10-19T20:40:00.000Z", "value": 495.0}
+    ]}],
+    "VirtualUsers": [{"data": [
+      {"timestamp": "2026-10-19T20:39:50.000Z", "value": 3.0},
+      {"timestamp": "2026-10-19T20:40:00.000Z", "value": 9.0}
+    ]}]
+  },
+  "staging_total": {
+    "value": [
+      {"name": {"value": "Requests"}, "unit": "Count", "timeseries": [{"data": [
+        {"timeStamp": "2026-10-19T20:38:00Z", "total": 1.0},
+        {"timeStamp": "2026-10-19T20:39:00Z", "total": 0.0}
+      ]}]},
+      {"name": {"value": "Http5xx"}, "unit": "Count", "timeseries": [{"data": [
+        {"timeStamp": "2026-10-19T20:38:00Z", "total": 0.0},
+        {"timeStamp": "2026-10-19T20:39:00Z", "total": 0.0}
+      ]}]}
+    ]
+  },
+  "staging_average": {
+    "value": [
+      {"name": {"value": "HttpResponseTime"}, "unit": "Seconds", "timeseries": [{"data": [
+        {"timeStamp": "2026-10-19T20:38:00Z", "average": 0.01},
+        {"timeStamp": "2026-10-19T20:39:00Z"}
+      ]}]},
+      {"name": {"value": "AverageMemoryWorkingSet"}, "unit": "Bytes", "timeseries": [{"data": [
+        {"timeStamp": "2026-10-19T20:38:00Z", "average": 125443072.0},
+        {"timeStamp": "2026-10-19T20:39:00Z", "average": 122088789.0}
+      ]}]}
+    ]
+  },
+  "shared_plan": {
+    "value": [
+      {"name": {"value": "CpuPercentage"}, "unit": "Percent", "timeseries": [{"data": [
+        {"timeStamp": "2026-10-19T20:38:00Z", "average": 21.0},
+        {"timeStamp": "2026-10-19T20:39:00Z", "average": 22.0}
+      ]}]},
+      {"name": {"value": "MemoryPercentage"}, "unit": "Percent", "timeseries": [{"data": [
+        {"timeStamp": "2026-10-19T20:38:00Z", "average": 81.0},
+        {"timeStamp": "2026-10-19T20:39:00Z", "average": 82.0}
+      ]}]},
+      {"name": {"value": "HttpQueueLength"}, "unit": "Count", "timeseries": [{"data": [
+        {"timeStamp": "2026-10-19T20:38:00Z", "average": 0.0},
+        {"timeStamp": "2026-10-19T20:39:00Z", "average": 0.0}
+      ]}]}
+    ]
+  },
+  "definitions": {
+    "metrics": {
+      "CpuPercentage": {
+        "name": "CpuPercentage", "metricNamespace": "Microsoft.Web/serverFarms", "aggregation": "Average",
+        "resourceId": "/subscriptions/70356d4b-bebe-4358-8baa-5dbdaf412088/resourceGroups/rg-contoso-gitlab-demo/providers/Microsoft.Web/serverfarms/plan-gitlab-demo",
+        "resourceType": "Microsoft.Web/serverfarms", "unit": "Percent"
+      },
+      "HttpResponseTime": {
+        "name": "HttpResponseTime", "metricNamespace": "Microsoft.Web/sites/slots", "aggregation": "Average",
+        "resourceId": "/subscriptions/70356d4b-bebe-4358-8baa-5dbdaf412088/resourceGroups/rg-contoso-gitlab-demo/providers/Microsoft.Web/sites/app-gitlab-demo-eeed02/slots/staging",
+        "resourceType": "Microsoft.Web/sites/slots", "unit": "Seconds"
+      }
+    }
+  }
+}

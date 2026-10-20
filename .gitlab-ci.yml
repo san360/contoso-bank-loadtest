@@ -140,8 +140,10 @@ performance_gate:
           --app-component-type "$resource_type" --metric-namespace "$namespace" --metric-name "$name" \
           --aggregation "$aggregation" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o none
       done < <(jq -r '.metrics | to_entries[] | [.key,.value.resourceId,.value.resourceType,.value.metricNamespace,.value.name,.value.aggregation] | @tsv' demo-evidence/selected-server-metrics.json)
-    - az load test app-component list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json | tee demo-evidence/app-components.json
-    - az load test server-metric list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json | tee demo-evidence/server-metric-definitions.json
+    - az load test app-component list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > demo-evidence/app-components.json
+    - jq -r --arg view components -f loadtests/gitlab-demo/metrics-tsv.jq demo-evidence/app-components.json
+    - az load test server-metric list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > demo-evidence/server-metric-definitions.json
+    - jq -r --arg view definitions -f loadtests/gitlab-demo/metrics-tsv.jq demo-evidence/server-metric-definitions.json
     - python -m tools.gitlab_demo.pipeline monitoring-check
     - echo "=== Start the real 12-VU / 90-second run with UNCHANGED criteria ==="
     - |
@@ -173,6 +175,7 @@ performance_gate:
       done
       echo "=== Settled client statistics / criteria (NOT_APPLICABLE is NEVER a pass) ==="
       cat demo-evidence/verdict.json
+    - jq -r --arg view requests -f loadtests/gitlab-demo/metrics-tsv.jq demo-evidence/run.json
     - echo "=== Download real results, engine logs and HTML report ==="
     - |
       if ! az load test-run download-files --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
@@ -198,7 +201,7 @@ performance_gate:
       if az load test-run metrics list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" \
         --test-run-id "$ALT_RUN_ID" --metric-namespace LoadTestRunMetrics --interval PT10S \
         --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > demo-evidence/client-metric-series.json 2> .telemetry-error; then
-        jq '.value // .' demo-evidence/client-metric-series.json | sed -n '1,60p'
+        jq -r --arg view client -f loadtests/gitlab-demo/metrics-tsv.jq demo-evidence/client-metric-series.json | sed -n '1,61p'
       else
         rm -f demo-evidence/client-metric-series.json
         echo "Client time series unavailable (not a substituted measurement)"
@@ -218,7 +221,7 @@ performance_gate:
             file="demo-evidence/server-metrics-$scope-$aggregate.json"
             if az monitor metrics list --resource "$id" --metric $names --aggregation "$aggregate" --interval PT1M \
               --start-time "$METRIC_START" --end-time "$METRIC_END" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > "$file" 2> .telemetry-error; then
-              jq '{metrics:[.value[]|{name:.name.value,unit:.unit}],non_null_points:([.value[].timeseries[].data[]|select(.average!=null or .total!=null)]|length),first_points:([.value[].timeseries[].data[]|select(.average!=null or .total!=null)][0:8])}' "$file"
+              jq -r --arg view server --arg scope "$scope" -f loadtests/gitlab-demo/metrics-tsv.jq "$file" | sed -n '1,41p'
             else
               rm -f "$file"; echo "Server metrics unavailable for $scope/$aggregate"
               python -m tools.gitlab_demo.pipeline sanitize < .telemetry-error
@@ -314,8 +317,10 @@ cli_walkthrough:
       az load test "$operation" --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --load-test-config-file demo-evidence/input/transactions.yaml --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o none
     - az load test show --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --query '{testId:testId,metricsReferenceIdentityType:metricsReferenceIdentityType,criteria:passFailCriteria}' --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json
     - echo "=== 4 Monitored components and metric DEFINITIONS (not samples) ==="
-    - az load test app-component list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --subscription "$AZURE_SUBSCRIPTION_ID" -o json | tee demo-evidence/app-components.json
-    - az load test server-metric list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --subscription "$AZURE_SUBSCRIPTION_ID" -o json | tee demo-evidence/server-metric-definitions.json
+    - az load test app-component list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --subscription "$AZURE_SUBSCRIPTION_ID" -o json > demo-evidence/app-components.json
+    - jq -r --arg view components -f loadtests/gitlab-demo/metrics-tsv.jq demo-evidence/app-components.json
+    - az load test server-metric list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-id "$TEST_ID" --subscription "$AZURE_SUBSCRIPTION_ID" -o json > demo-evidence/server-metric-definitions.json
+    - jq -r --arg view definitions -f loadtests/gitlab-demo/metrics-tsv.jq demo-evidence/server-metric-definitions.json
     - |
       jq -e --arg staging "$STAGING_RESOURCE_ID" --arg plan "$APP_SERVICE_PLAN_ID" '.components|with_entries(.key|=ascii_downcase)|has($staging|ascii_downcase) and has($plan|ascii_downcase)' demo-evidence/app-components.json
       jq -e '.metrics|length==7' demo-evidence/server-metric-definitions.json
@@ -342,6 +347,7 @@ cli_walkthrough:
       done
       echo "=== Actual settled client statistics and criteria ==="
       cat demo-evidence/verdict.json
+    - jq -r --arg view requests -f loadtests/gitlab-demo/metrics-tsv.jq demo-evidence/run.json
     - echo "=== 6 Download results, engine logs and report ==="
     - |
       if ! az load test-run download-files --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-run-id "$RUN_ID" --path demo-evidence/downloads --result --log --report --force --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o none 2> .download-error; then
@@ -360,7 +366,7 @@ cli_walkthrough:
       rm -f .engine-log .download-error
     - echo "=== 7 Native CLIENT metric time series ==="
     - az load test-run metrics list --load-test-resource "$LOAD_TEST_NAME" --resource-group "$AZURE_RESOURCE_GROUP" --test-run-id "$RUN_ID" --metric-namespace LoadTestRunMetrics --interval PT10S --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > demo-evidence/client-metric-series.json
-    - jq '.value // .' demo-evidence/client-metric-series.json | sed -n '1,60p'
+    - jq -r --arg view client -f loadtests/gitlab-demo/metrics-tsv.jq demo-evidence/client-metric-series.json | sed -n '1,61p'
     - echo "=== 8 Actual STAGING and SHARED-PLAN samples; correlated application logs ==="
     - |
       start=$(date -u -d "$(jq -er '.startDateTime' demo-evidence/run.json)" +%s)
@@ -374,7 +380,7 @@ cli_walkthrough:
           echo "\$ az monitor metrics list --metric $names --aggregation $aggregate ($scope; plan CPU includes production)"
           file="demo-evidence/server-metrics-$scope-$aggregate.json"
           if az monitor metrics list --resource "$id" --metric $names --aggregation "$aggregate" --interval PT1M --start-time "$from" --end-time "$until" --subscription "$AZURE_SUBSCRIPTION_ID" --only-show-errors -o json > "$file" 2> .telemetry-error; then
-            jq '{metrics:[.value[]|{name:.name.value,unit:.unit}],non_null_points:([.value[].timeseries[].data[]|select(.average!=null or .total!=null)]|length),first_points:([.value[].timeseries[].data[]|select(.average!=null or .total!=null)][0:6])}' "$file"
+            jq -r --arg view server --arg scope "$scope" -f loadtests/gitlab-demo/metrics-tsv.jq "$file" | sed -n '1,41p'
           else rm -f "$file"; echo "Server samples unavailable for $scope/$aggregate (not invented)"; safe_text .telemetry-error; fi
         done
       done
