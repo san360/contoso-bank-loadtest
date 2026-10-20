@@ -21,6 +21,80 @@ prepared slot/metric bindings are therefore reused and verified with native
 list commands. Missing slot bindings fail loudly; production is never attached
 as a substitute. Actual slot samples still come from native Azure Monitor CLI.
 
+## CI/CD workflow and trigger scenarios
+
+This demo deliberately separates **feature validation (CI)**, **production
+promotion (CD)** and **testing an already-prepared app**. Its current rules are
+restricted to trusted protected branches; they are not generic CI for every
+branch, issue or fork.
+
+| Scenario / event | What actually triggers today | Jobs / effect |
+|---|---|---|
+| Create a feature request or GitLab issue | Nothing automatically | A request describes work; it does not generate code, open an MR or start a load test. |
+| Push a commit to a branch without an open eligible MR | Push pipelines are filtered | No pipeline, including a push to `main`. |
+| Open a same-project MR from protected `demo-merchant-enrichment` to `main` | GitLab `merge_request_event` | `functional_tests` -> `candidate_artifact` -> `performance_gate`. |
+| Push another commit to that open MR's source branch | A new MR pipeline for the new source SHA | Repeat functional checks, build a new exact-SHA ZIP and load-test that candidate in staging. A previous green SHA is not approval for new code. |
+| MR targets another branch, uses an arbitrary feature-branch name, or comes from a fork | Not configured / filtered | No privileged deployment/load jobs. Do not broaden these rules for untrusted code. |
+| Performance gate fails | The MR pipeline fails | Merge is blocked; retain results/logs. No production swap. A code fix on the same eligible MR triggers fresh CI. |
+| Merge a green MR into `main` | The merge's ordinary push event is filtered | **Merge alone does not deploy production.** This also allows CI/documentation-only changes without a swap. |
+| External demo controller explicitly requests promotion after verified green + fast-forward merge | API pipeline on `main` with `DEMO_PROMOTE_SHA`, `DEMO_GATE_JOB_ID` and `DEMO_MR_IID` | Only `promote_tested_slot`; revalidate the current merged SHA/latest green gate and ALT pass, then swap the exact tested staging slot without rebuilding. |
+| Select **Run pipeline** on protected `main` in GitLab | `web` pipeline, with `DEMO_PROMOTE_SHA` empty | Only `cli_walkthrough`; test the prepared staging app and show TSV metrics/logs. No application deploy, reset or promotion. |
+| An authorized caller requests a basic run using the API | `api` pipeline on `main`, `DEMO_CLI_WALKTHROUGH=true`, `DEMO_PROMOTE_SHA` empty | The same single `cli_walkthrough` job. API invocation remains an API event; it does not pretend to be a UI/web event. |
+| A schedule, tag, external trigger-token event, or automatic issue webhook | Not configured / filtered | A future extension would need reviewed workflow/job rules and credential/runner protections; it is not active in this deployment. |
+
+The two API modes are mutually exclusive: walkthrough needs an empty
+`DEMO_PROMOTE_SHA`; promotion requires that SHA and rejects
+`DEMO_CLI_WALKTHROUGH=true`. Calling the API without the required mode/inputs
+does not create a usable deployment pipeline. A basic-run request is:
+
+```http
+POST /api/v4/projects/1/pipeline
+```
+```json
+{
+  "ref": "main",
+  "variables": [{"key": "DEMO_CLI_WALKTHROUGH", "value": "true"}]
+}
+```
+
+Use an authorized project token kept outside source/logs; the example deliberately
+contains no authentication header or credential. In the GitLab UI no API flag is
+needed: choose `main` and leave promotion inputs empty.
+
+### Feature request through merge and optional release
+
+```text
+Feature request / issue (no automatic pipeline)
+  -> trusted developer implements a change on the fixed protected source branch
+  -> opens or updates its same-project MR to main
+  -> functional_tests
+  -> candidate_artifact: ZIP + source SHA / producing pipeline / content hash
+  -> performance_gate: one locked staging deploy -> exact-SHA probe -> reset/warm
+       -> native az test upsert/run -> settled criteria -> TSV metrics/logs
+       -> fail: merge blocked; fix code and repeat the MR pipeline
+       -> pass: current source is eligible for fast-forward merge
+  -> merge to main (no automatic production deployment)
+  -> optional explicit controller API promotion request
+       -> verify the exact merged/tested source and fresh ALT pass
+       -> swap tested staging to production; no rebuild
+```
+
+The optional controller is the transparent, prewritten merchant/category
+red-to-green demonstration, **not an issue-triggered autonomous coding agent**.
+It creates/updates an MR, verifies the measured red before applying its batching
+patch, and separately requests promotion after green and merge. For a manually
+managed feature MR, green/merge does not secretly start that controller.
+The existing completed MR1 and CI-only MR2 are retained examples; do not reset
+or replay them merely to inspect this workflow.
+
+All staging users (`performance_gate`, `cli_walkthrough`, promotion) share
+`resource_group: contoso-gitlab-demo-staging`, so their staging intervals cannot
+interleave. The unchanged load gate requires p95 <= 500 ms and errors <= 1%,
+with settled numeric criteria; DONE/NOT_APPLICABLE alone cannot pass.
+JSON evidence and result/log/report downloads remain job artifacts on failure
+as well as success. Optional asynchronous server/log telemetry is explicitly
+labelled when unavailable, never fabricated.
+
 Open [`.gitlab-ci.yml`](../.gitlab-ci.yml), then the `cli_walkthrough` log.
 Azure operations are ordinary `az` commands in separate script entries, with
 safe explicit labels inside the few loops. No Python Azure gate/deployment
@@ -96,6 +170,36 @@ Real zero samples remain `0`; null buckets are omitted and empty series say
 only after the headered projection, not to the JSON artifacts.
 
 Reference: [Microsoft's Azure Load Testing CLI CI/CD guide](https://learn.microsoft.com/azure/app-testing/load-testing/how-to-configure-load-test-cicd).
+
+## Verified TSV pipeline run (2026-10-20)
+
+The requested fresh run is
+[pipeline10](https://gitlab-clean.greenpond-7c00b83b.swedencentral.azurecontainerapps.io/root/contoso-bank/-/pipelines/10),
+with exactly one successful
+[`cli_walkthrough` job24](https://gitlab-clean.greenpond-7c00b83b.swedencentral.azurecontainerapps.io/root/contoso-bank/-/jobs/24).
+It used API mode on protected `main` source
+`ca0d8e72f6fc55602dce6051ddcf0d28d8ead919`; ALT run `cli-10-24` passed both
+unchanged criteria. The actual console includes:
+
+```tsv
+request	samples	p95_ms	error_percent	throughput_rps
+GetTransactions	6879	243	0	70.91752577319588
+Total	6879	243	0	70.91752577319588
+```
+
+The job also printed 30 real client metric points, 19 staging and 15 shared-plan
+non-null metric points, two monitored components, seven metric definitions,
+a sanitized engine-log excerpt and 100 source-correlated application log rows.
+All TSV headers and request values were checked against the fresh JSON artifacts.
+Use the job's **log** for the readable CLI/TSV story and **Browse artifacts** for
+`demo-evidence/run.json`, `verdict.json`, metric/log JSON and downloaded
+result/log/report archives; the full JSON was not replaced by the tables.
+
+This run did **not** deploy/reset the application or promote anything.
+Staging remained source `af3663bb04ee4ca9c1a93fb1370bac1c1427293b`
+from producing pipeline8 before and after the test. Production remained source
+`39ab1f106620b71cda89ec31b48c3f692c7f5042` from pipeline3. Pipeline code SHA,
+deployed staging SHA and production SHA are intentionally distinct here.
 
 ## Verified live execution (2026-10-19)
 
