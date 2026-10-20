@@ -12,13 +12,15 @@ deploy_load_test -> run_load_test -> view_results_metrics -> view_logs
 | `deploy_load_test` | "Deploy the load-test definition from the YAML and URL-request JSON in the repo." | `az load test update --load-test-config-file ...` |
 | `run_load_test` | "Run that test and wait for a measured pass/fail result." | `az load test-run create` followed by `az load test-run show` |
 | `view_results_metrics` | "Read the request statistics, client metrics and actual server metrics as TSV." | `az load test-run metrics list` and `az monitor metrics list` |
-| `view_logs` | "Download the result/report/engine logs and inspect correlated application logs." | `az load test-run download-files --result --log --report` and `az monitor log-analytics query` |
+| `view_logs` | "Download the result CSV and engine logs, request a report when available, and inspect application logs." | `az load test-run download-files --result --log --report` and `az monitor log-analytics query` |
 
 The root [`.gitlab-ci.yml`](../.gitlab-ci.yml) is the presenter script. Every
 Azure operation is visible there; none of these four jobs invokes Python.
 The shared setup only signs in with managed identity in each job's isolated
 CLI profile. The complex feature/MR path is separate in
 [`.gitlab/advanced.yml`](../.gitlab/advanced.yml) and does not run in this demo.
+See the [successful four-stage pipeline11](https://gitlab-clean.greenpond-7c00b83b.swedencentral.azurecontainerapps.io/root/contoso-bank/-/pipelines/11)
+for the audience view.
 
 This tests the **already-prepared staging application**. It does not redeploy,
 reset or promote the application. The test ID, 40-row request, 12 users,
@@ -115,8 +117,8 @@ The advanced MR `performance_gate` still holds its original contiguous lock
 from candidate deployment through measurement/evidence, and promotion uses the
 same lock. The unchanged load gate requires p95 <= 500 ms and errors <= 1%,
 with settled numeric criteria; DONE/NOT_APPLICABLE alone cannot pass.
-JSON evidence and result/log/report downloads remain job artifacts on failure
-as well as success. Optional asynchronous server/log telemetry is explicitly
+JSON evidence, result CSV/engine-log downloads and reports when available remain
+job artifacts on failure as well as success. Optional asynchronous app-log telemetry is explicitly
 labelled when unavailable, never fabricated.
 
 Open each stage's log to follow the native commands; shared JSON artifacts carry
@@ -168,9 +170,11 @@ It is historical evidence, not a newly replayed regression. A CI-only validation
 MR keeps the existing batched feature and production artifact; it must not
 automatically reset or promote just to demonstrate the new YAML.
 
-Job artifacts (`when: always`, 30 days) retain safe run/verdict/summary JSON,
+Job artifacts (`when: always`, 30 days) retain safe run/verdict/provenance JSON
+(the advanced gate also writes `summary.json`),
 component/definition inventories, client/server metrics, correlated logs,
-downloaded results/engine logs/report and the exact candidate ZIP/manifest.
+downloaded results/engine logs and any available report. The advanced MR path
+also retains its exact candidate ZIP/manifest.
 Secrets, access tokens, SAS response URLs and raw authorization headers are not
 printed. Runner prerequisites are pinned in its Dockerfile: jq, unzip, load 2.1.0
 and log-analytics 1.0.0b3. Its explicit test environment also pins PyYAML 6.0.3.
@@ -192,6 +196,33 @@ Real zero samples remain `0`; null buckets are omitted and empty series say
 only after the headered projection, not to the JSON artifacts.
 
 Reference: [Microsoft's Azure Load Testing CLI CI/CD guide](https://learn.microsoft.com/azure/app-testing/load-testing/how-to-configure-load-test-cicd).
+
+## Verified four-stage execution (2026-10-20)
+
+[Pipeline11](https://gitlab-clean.greenpond-7c00b83b.swedencentral.azurecontainerapps.io/root/contoso-bank/-/pipelines/11)
+executed exactly these four stages in order, all successfully:
+
+| Stage | Actual job | What the console proved |
+|---|---|---|
+| Deploy definition | [25](https://gitlab-clean.greenpond-7c00b83b.swedencentral.azurecontainerapps.io/root/contoso-bank/-/jobs/25) | Native YAML update; exported the definition and one run ID. |
+| Run test | [26](https://gitlab-clean.greenpond-7c00b83b.swedencentral.azurecontainerapps.io/root/contoso-bank/-/jobs/26) | Definition/profile/binding readback, native run, settled criteria and unchanged prepared app version. |
+| View results/metrics | [27](https://gitlab-clean.greenpond-7c00b83b.swedencentral.azurecontainerapps.io/root/contoso-bank/-/jobs/27) | Headered TSV request/client/server metrics and component/definition tables. |
+| View logs | [28](https://gitlab-clean.greenpond-7c00b83b.swedencentral.azurecontainerapps.io/root/contoso-bank/-/jobs/28) | Result CSV and engine-log download, real sanitized engine lines and correlated application logs. |
+
+Every stage's artifact carried the same immutable `cli-11` run ID. The actual
+measured result was **7,261 samples, p95 231 ms, errors 0%, 74.09183673469387 RPS**.
+The metrics job showed 30 real client points, 19 staging and 15 shared-plan
+non-null points, two components and seven definitions. The log job returned
+100 source-correlated application rows. Its downloads were `csv.zip` and
+`logs.zip`: `--report` was requested, but **no HTML report was available for this
+run**. Report availability is not substituted for the actual CSV/log evidence.
+
+All four job traces contained native CLI operations and no Python invocation,
+application deployment, reset or promotion. Staging remained source
+`af3663bb04ee4ca9c1a93fb1370bac1c1427293b` from pipeline8 before/after the test;
+production remained `39ab1f106620b71cda89ec31b48c3f692c7f5042` from pipeline3.
+The advanced jobs still compile from the separate include; no second regression
+scenario or measured negative run was launched to validate the refactor.
 
 ## Historical single-job TSV run (2026-10-20, before the four-stage revision)
 
