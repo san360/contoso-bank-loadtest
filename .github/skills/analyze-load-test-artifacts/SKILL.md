@@ -83,7 +83,7 @@ python .github\skills\analyze-load-test-artifacts\scripts\analyze_artifacts.py `
 ```
 
 The input can be a directory, ZIP (including the demo's downloaded bundle), gzip,
-CSV/JTL, log, or run JSON. The helper uses only the Python standard library. It
+CSV/TSV/JTL, log, or run JSON. The helper uses only the Python standard library. It
 does not extract archives or execute content. It supports JMeter CSV/XML samples,
 Locust final stats/failures CSV, metric exports, run metadata and engine log
 patterns, with bounded decompression and explicit skipped/malformed-file warnings.

@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from .commands import (
     ACTION_BY_ID, ROOT, Command, Config, build_commands, csv_export, metric_rows,
-    public_actions, redact, run_verdict, script_for,
+    public_actions, redact, run_verdict, script_for, tsv_export,
 )
 
 LOG = logging.getLogger("cli_demo")
@@ -163,13 +163,15 @@ class App:
                     raise ValueError("The demo YAML must define exactly one top-level testId.")
                 args = commands[0].args
                 config_file = Path(args[args.index("--load-test-config-file") + 1])
+                if not config_file.is_absolute():
+                    config_file = ROOT / config_file
                 try:
                     config_file.parent.mkdir(parents=True)
                     shutil.copyfile(template.with_suffix(".jmx"), config_file.with_suffix(".jmx"))
                     config_file.write_text(content, encoding="utf-8")
                 except OSError as exc:
                     raise ValueError(f"Could not prepare the demo YAML and JMX files ({config_file}): {exc}") from exc
-                test_config = {"path": str(config_file), "content": content}
+                test_config = {"path": args[args.index("--load-test-config-file") + 1], "content": content}
             plan = Plan(id_, action, config, commands, directory, test_config=test_config)
             self.plans[id_] = plan
         return plan.public()
@@ -271,8 +273,10 @@ class App:
                     if command.metric or command.namespace:
                         definitions = client_definitions if command.namespace == "LoadTestRunMetrics" else None
                         entry["metricRows"] = metric_rows(data, command.metric, command.namespace, definitions)
-                        (plan.directory / Path(command.artifact).with_suffix(".csv")).write_text(
-                            csv_export(data, command.metric, command.namespace, definitions), encoding="utf-8")
+                        for suffix, exporter in ((".csv", csv_export), (".tsv", tsv_export)):
+                            (plan.directory / Path(command.artifact).with_suffix(suffix)).write_text(
+                                exporter(data, command.metric, command.namespace, definitions),
+                                encoding="utf-8", newline="")
                         if not entry["metricRows"]:
                             with self.lock:
                                 job["warnings"].append(
@@ -477,7 +481,7 @@ class Handler(BaseHTTPRequestHandler):
                 shell = parse_qs(urlsplit(self.path).query).get("shell", ["powershell"])[0]
                 if shell not in {"powershell", "bash"}:
                     raise ValueError("Choose powershell or bash.")
-                body = script_for(plan.commands, shell).encode("utf-8")
+                body = script_for(plan.commands, shell, plan.test_config).encode("utf-8")
                 self._headers(200, "text/plain; charset=utf-8", len(body),
                               filename="load-test-step." + ("sh" if shell == "bash" else "ps1"))
                 self.wfile.write(body)
@@ -520,7 +524,9 @@ class Handler(BaseHTTPRequestHandler):
                 or not file.is_file()):
             raise FileNotFoundError("Artifact not found.")
         with file.open("rb") as handle:
-            self._headers(200, mimetypes.guess_type(file.name)[0] or "application/octet-stream",
+            content_type = ("text/tab-separated-values; charset=utf-8" if file.suffix.lower() == ".tsv"
+                            else mimetypes.guess_type(file.name)[0] or "application/octet-stream")
+            self._headers(200, content_type,
                           file.stat().st_size, re.sub(r"[^A-Za-z0-9._ -]", "_", file.name))
             shutil.copyfileobj(handle, self.wfile)
 

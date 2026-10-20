@@ -84,6 +84,7 @@ az extension add --name load</pre>
           <p id="client-metric-status" class="muted" role="status"></p>
           <div id="client-metric-grid" class="client-metric-grid"></div>
           <div id="client-metric-downloads" class="file-list"></div>
+          <div id="client-metric-tsv-preview"></div>
         </section>
       </section>
 
@@ -125,8 +126,9 @@ az extension add --name load</pre>
       <section id="metric-panel" class="panel result-panel" hidden>
         <div class="section-heading"><h2 id="metric-heading">Metric time series</h2><span id="metric-count" class="hint"></span></div>
         <svg id="metric-chart" viewBox="0 0 700 140" role="img" aria-label="First returned metric series over time"></svg>
-        <p class="hint">First series shown above; all returned datapoints are in the JSON/CSV downloads. Empty is not zero.</p>
+        <p class="hint">First series shown above; all returned datapoints are in the JSON/CSV/TSV downloads. Empty is not zero.</p>
         <div id="metric-table" class="table-scroll"></div>
+        <div id="metric-tsv-preview"></div>
       </section>
 
       <section class="panel console-panel">

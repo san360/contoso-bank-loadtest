@@ -213,14 +213,50 @@ def shell_command(args: tuple[str, ...] | list[str], shell: str = "powershell") 
     return " ".join(quote(token) for token in tokens)
 
 
-def script_for(commands: list[Command], shell: str = "powershell") -> str:
+def script_for(commands: list[Command], shell: str = "powershell",
+               test_config: dict[str, str] | None = None) -> str:
     lines = ["# Generated from the app's allowlisted command preview.",
+             "# Run from the root of a checkout of san360/contoso-bank-loadtest.",
              "# Uses your existing az login session. Review the target and cost before execution.",
              "# The load extension may require the active CLI subscription to match --subscription.",
              "# Select it explicitly with az account set, preferably in a separate AZURE_CONFIG_DIR."]
     lines.append("set -euo pipefail" if shell == "bash" else "$ErrorActionPreference = 'Stop'")
+    portable_config = None
+    if test_config is not None:
+        portable_config = Path(".loadtest-demo") / "artifacts" / Path(test_config["path"]).parent.name / "smoke.yaml"
+        template = Path("loadtests") / "cli-demo" / "smoke.jmx"
+        content = test_config["content"]
+        if shell == "bash":
+            target = shlex.quote(portable_config.as_posix())
+            source = shlex.quote(template.as_posix())
+            lines.extend([
+                "",
+                f'test -f {source} || {{ printf "%s\\n" "Run this script from the repository root." >&2; exit 1; }}',
+                f"mkdir -p {shlex.quote(portable_config.parent.as_posix())}",
+                f"cp {source} {shlex.quote(portable_config.with_suffix('.jmx').as_posix())}",
+                f"cat > {target} <<'AZURE_LOAD_TEST_DEMO_YAML'",
+                content.rstrip("\n"),
+                "AZURE_LOAD_TEST_DEMO_YAML",
+            ])
+        else:
+            target = str(portable_config).replace("'", "''")
+            source = str(template).replace("'", "''")
+            parent = str(portable_config.parent).replace("'", "''")
+            jmx = str(portable_config.with_suffix(".jmx")).replace("'", "''")
+            yaml_literal = content.replace("'", "''")
+            lines.extend([
+                "",
+                f"if (-not (Test-Path -LiteralPath '{source}')) {{ throw 'Run this script from the repository root.' }}",
+                f"New-Item -ItemType Directory -Force -Path '{parent}' | Out-Null",
+                f"Copy-Item -LiteralPath '{source}' -Destination '{jmx}' -Force",
+                f"[System.IO.File]::WriteAllText((Join-Path $PWD.Path '{target}'), '{yaml_literal}', [System.Text.UTF8Encoding]::new($false))",
+            ])
     for command in commands:
-        lines.extend(["", shell_command(command.args, shell)])
+        args = list(command.args)
+        if portable_config is not None and "--load-test-config-file" in args:
+            args[args.index("--load-test-config-file") + 1] = (
+                portable_config.as_posix() if shell == "bash" else str(portable_config))
+        lines.extend(["", shell_command(args, shell)])
         if shell != "bash":
             lines.append("if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }")
     return "\n".join(lines) + "\n"
@@ -314,8 +350,11 @@ def build_commands(action_id: str, config: Config, artifact_dir: Path) -> list[C
         return [load(["test", "list"], "tests.json")]
     if action_id == "create-test":
         config.require("targetUrl")
+        config_file = artifact_dir / "smoke.yaml"
+        if config_file.is_absolute() and config_file.is_relative_to(ROOT):
+            config_file = config_file.relative_to(ROOT)
         return [load(["test", "create", *config.test_scope(), "--load-test-config-file",
-                      str(artifact_dir / "smoke.yaml"),
+                      str(config_file),
                       *target_environment(config.targetUrl)], "test.json")]
     if action_id == "show-test":
         return [load(["test", "show", *config.test_scope()], "test.json")]
@@ -490,10 +529,10 @@ def metric_rows(payload: Any, metric: str = "", namespace: str = "",
     return rows
 
 
-def csv_export(payload: Any, metric: str = "", namespace: str = "", definitions: Any = None) -> str:
+def _delimited_export(payload: Any, metric: str, namespace: str, definitions: Any, delimiter: str) -> str:
     output = io.StringIO(newline="")
     columns = ["timestamp", "namespace", "metric", "unit", "dimensions", "aggregation", "value"]
-    writer = csv.DictWriter(output, fieldnames=columns)
+    writer = csv.DictWriter(output, fieldnames=columns, delimiter=delimiter)
     writer.writeheader()
     for row in metric_rows(payload, metric, namespace, definitions):
         # Downloads can be opened in Excel; do not allow a metric/dimension to become a formula.
@@ -501,6 +540,14 @@ def csv_export(payload: Any, metric: str = "", namespace: str = "", definitions:
                          and value.startswith(("=", "+", "-", "@", "\t", "\r")) else value
                          for key, value in row.items()})
     return output.getvalue()
+
+
+def csv_export(payload: Any, metric: str = "", namespace: str = "", definitions: Any = None) -> str:
+    return _delimited_export(payload, metric, namespace, definitions, ",")
+
+
+def tsv_export(payload: Any, metric: str = "", namespace: str = "", definitions: Any = None) -> str:
+    return _delimited_export(payload, metric, namespace, definitions, "\t")
 
 
 def public_actions() -> list[dict[str, str]]:

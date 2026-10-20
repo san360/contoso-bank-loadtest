@@ -165,7 +165,7 @@ test** to show the actual **Azure Load Testing YAML** above the **CLI shell**
 preview. Explain the YAML first, then the `az load test create
 --load-test-config-file ...` command that reads it. **Copy YAML** copies the
 generated file; the CLI preview, **Copy** and **Download step script** use the same
-creation command in PowerShell or Bash. Confirm the target, then execute.
+selected test configuration in PowerShell or Bash. Confirm the target, then execute.
 
 Each create preview writes a separate `smoke.yaml` with `testId` taken from the
 form's **Test ID**, plus a copy of `smoke.jmx` beside it. The files live in the
@@ -176,11 +176,28 @@ YAML shown and copied in the UI is the exact file used by the command and
 downloaded step scripts. Separate previews do not overwrite each other's inputs.
 After changing the Test ID, preview **Create** again before executing it.
 
+With the default data directory, the CLI uses a **checkout-relative** path such as
+`.loadtest-demo\artifacts\<preview-id>\smoke.yaml`, not an absolute Copilot
+worktree/session path. The server resolves that path from the repository root.
+An explicitly configured external `--data-dir` is respected for local execution.
+
+Downloaded **create-step scripts** are portable to another normal checkout:
+run the script from that checkout's root. It writes the selected YAML into a
+local ignored `.loadtest-demo\artifacts\<preview-id>\` folder and copies
+`loadtests\cli-demo\smoke.jmx` from that checkout before invoking Azure CLI.
+No generated file or path from the original Copilot session is required. The
+script stops with an explicit message if it is not run from a checkout containing
+the test source.
+
 The opt-in files are outside `loadtests/config/` so existing `azd up` provisioning
 does not change. These repository templates are never rewritten by the UI:
 
 - [`loadtests/cli-demo/smoke.yaml`](../loadtests/cli-demo/smoke.yaml)
 - [`loadtests/cli-demo/smoke.jmx`](../loadtests/cli-demo/smoke.jmx)
+
+Both source files are versioned on `main`; generated per-preview copies are
+temporary local inputs, not missing files that need to be committed. A fresh
+clone of `main` includes the source templates and the runnable app.
 
 The test uses **one engine, five users, ten-second ramp-up, 60-second scheduled
 duration, one-second per-user pacing**, and one GET request. A 200 response is
@@ -270,14 +287,27 @@ bucket value and its unit, with expandable datapoints/dimensions. Values use
 CLI/service-default aggregations and one-minute buckets; a latest bucket value is
 not a whole-run total.
 
-The overview has direct **JSON/CSV download** links. JSON preserves named empty
-series; CSV contains all returned datapoints with their metric names and units.
+The overview has direct **JSON/CSV/TSV download** links. JSON preserves named empty
+series; CSV and TSV contain all returned datapoints with their metric names and units.
 Changing the selected test/run clears the previous overview, and an in-flight
 response cannot overwrite results for a newly selected scope.
 
 **Get one client metric** still fetches a named metric such as `ResponseTime`,
 while **Get engine health** remains separate. Both keep the existing single-series
-chart/table and JSON/CSV exports.
+chart/table and JSON/CSV/TSV exports.
+
+Expand **View flattened TSV** to list the tab-separated rows and use **Copy TSV**
+to paste them into a terminal, spreadsheet, or another tool. TSV files have a
+header and the same columns as CSV: `timestamp`, `namespace`, `metric`, `unit`,
+`dimensions`, `aggregation`, and `value`. Names and units stay attached to every
+returned value; missing datapoints do not become zeros. CSV/TSV share escaping and
+spreadsheet-formula protection.
+
+The underlying Azure CLI commands still request JSON; the app flattens the
+response into TSV instead of applying `-o tsv` directly to nested metric objects.
+TSV is generated for all-client, single-client, engine and server metric queries,
+and is included in their evidence ZIPs. Old saved jobs are left untouched; refresh
+the metric query to generate TSV for a previous run.
 
 On **Server metrics**, use the start/end timestamps populated by **Inspect run**
 to fetch application values over the same window. Discovery shows valid metric
@@ -306,7 +336,7 @@ visible. The app does not execute or inline artifact HTML.
 
 - Run metadata with status, criteria and statistics.
 - Engine logs and raw result archives.
-- The configured named client metric and generator-health metric, as JSON/CSV.
+- The configured named client metric and generator-health metric, as JSON/CSV/TSV.
 - Server metric values **only if** a server resource/metric and valid run time
   window are configured; the preview explicitly says whether these are included.
 - A manifest with command provenance, errors and warnings.
@@ -325,10 +355,13 @@ Every execution has a separate persistent folder:
   run.json
   client-metrics.json
   client-metrics.csv
+  client-metrics.tsv
   engine-metrics.json
   engine-metrics.csv
+  engine-metrics.tsv
   server-metrics.json             # when requested/configured
   server-metrics.csv
+  server-metrics.tsv
   files/                         # original log/result archives
 ```
 
@@ -501,7 +534,7 @@ automatically upload artifacts to an agent service.
   datapoints and partial artifacts are visible.
   Non-idempotent operations are never automatically retried.
 - Downloads are attachment-only and confined to generated job folders. Metric
-  CSV exports neutralize formula prefixes. Archive contents are never executed.
+  CSV/TSV exports neutralize formula prefixes. Archive contents are never executed.
 - Never treat an engine log as server telemetry, an execution status as a
   performance verdict, or a time-series mean as a request percentile.
 

@@ -72,6 +72,7 @@ details pre { color:var(--ink); background:var(--bg); padding:10px; border-radiu
 .confirmation { display:flex; align-items:start; gap:9px; padding:12px; background:#fff8e7; color:#6e500f; border-radius:6px; margin:14px 0; font-size:12px; font-weight:500; }
 .confirmation input { margin:3px 0 0; }
 .output { margin:16px 0 0; background:#f4f7fc; border:1px solid var(--line); border-radius:7px; padding:16px; max-height:380px; overflow:auto; color:#33455f; font-size:11px; }
+.tsv-preview pre { white-space:pre; overflow-wrap:normal; tab-size:4; }
 .notice { margin:16px 28px 0; padding:12px 16px; background:#eaf2ff; border:1px solid #bed6f8; border-radius:7px; color:#174d93; }
 .notice.error { background:#fff1f0; color:#a52a23; border-color:#edc1bc; }
 .result-panel { margin-top:18px; }
