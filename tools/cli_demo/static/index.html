@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Azure Load Testing | CLI lab</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-mark" aria-hidden="true">&gt;_</div>
+    <div><h1>Azure Load Testing <span>CLI lab</span></h1><p>Real commands. Existing resources. No portal required.</p></div>
+    <span class="local-badge">LOCALHOST ONLY</span>
+  </header>
+  <div id="error" class="notice error" role="alert" hidden></div>
+  <div id="notice" class="notice" role="status" hidden></div>
+  <main class="layout">
+    <aside class="panel configuration">
+      <div class="section-heading"><h2>Connect your demo</h2><button id="reset-config" class="text-button">Reset</button></div>
+      <p class="muted">Uses your local <code>az login</code> session. No passwords, keys, or access tokens in this app.</p>
+      <label for="tenant">Tenant / directory <span class="muted">(for login)</span></label>
+      <input id="tenant" data-config="tenant" placeholder="Tenant GUID or fdpo.onmicrosoft.com" autocomplete="off">
+      <label for="subscription">Subscription ID</label>
+      <input id="subscription" data-config="subscription" list="subscription-list" placeholder="Subscription GUID" autocomplete="off">
+      <datalist id="subscription-list"></datalist>
+      <div id="setup-actions" class="compact-actions"></div>
+      <label for="resource-picker">Discovered Load Testing resources</label>
+      <select id="resource-picker"><option value="">Find resources, then select one</option></select>
+      <label for="resource-group">Resource group</label>
+      <input id="resource-group" data-config="resourceGroup" placeholder="rg-your-demo" autocomplete="off">
+      <label for="load-test-resource">Load Testing resource</label>
+      <input id="load-test-resource" data-config="loadTestResource" placeholder="your-existing-load-test-resource" autocomplete="off">
+      <hr>
+      <label for="target-url">Authorized target URL <span class="muted">(for create)</span></label>
+      <input id="target-url" data-config="targetUrl" type="url" placeholder="https://your-app.azurewebsites.net/health" autocomplete="off">
+      <p class="hint">The included test makes GET requests only: 5 users, 1 engine, 60 seconds. Azure minimum billing still applies.</p>
+      <label for="test-id">Test ID</label>
+      <input id="test-id" data-config="testId" maxlength="50" autocomplete="off">
+      <div class="section-heading"><label for="run-id">Run ID</label><button id="new-run" class="text-button">New ID</button></div>
+      <input id="run-id" data-config="runId" maxlength="50" autocomplete="off">
+      <div class="section-heading"><label for="run-picker">Existing runs</label><button id="load-run-list" class="text-button">Load runs</button></div>
+      <select id="run-picker"><option value="">List runs to select an execution</option></select>
+      <div id="account-status" class="status-line">Check the signed-in account before the demo.</div>
+      <details>
+        <summary>First-time access setup</summary>
+        <pre id="login-instructions">az login
+az extension add --name load</pre>
+        <p>Run these in a terminal, not in this web page. Azure CLI 2.66+ is required. The <code>load</code> command group is preview.</p>
+        <p>The load extension may use the active CLI subscription even with <code>--subscription</code>. Load operations are blocked on a mismatch. <strong>Select CLI subscription</strong> changes that profile only after confirmation. For isolation, authenticate a separate <code>AZURE_CONFIG_DIR</code> before starting this app.</p>
+        <p>Use <strong>Load Test Contributor</strong> on the load resource to create/run tests, plus management-plane read access to resolve it. Use <strong>Monitoring Reader</strong> on application resources to query server metrics.</p>
+      </details>
+    </aside>
+
+    <section class="workspace">
+      <nav class="tabs" aria-label="Demo stages">
+        <button class="tab active" data-tab="lifecycle" aria-selected="true">1. Create &amp; run</button>
+        <button class="tab" data-tab="metrics" aria-selected="false">2. Client &amp; engine</button>
+        <button class="tab" data-tab="server" aria-selected="false">3. Server metrics</button>
+        <button class="tab" data-tab="downloads" aria-selected="false">4. Downloads &amp; skills</button>
+      </nav>
+
+      <section id="tab-lifecycle" class="stage">
+        <div class="stage-heading"><p class="eyebrow">THE LIFECYCLE</p><h2>A test definition is not a test run.</h2>
+          <p>Create the script once, then start separately identified executions. Preview every command before running it.</p></div>
+        <div id="actions-lifecycle" class="action-grid"></div>
+        <div class="watch-row"><button id="watch-run" class="secondary">Watch selected run</button><span class="hint">Polls <code>test-run show</code> every 10 seconds. Closing the UI does not stop Azure.</span></div>
+      </section>
+
+      <section id="tab-metrics" class="stage" hidden>
+        <div class="stage-heading"><p class="eyebrow">WHAT THE LOAD GENERATOR SEES</p><h2>Client performance vs. engine health</h2>
+          <p><code>LoadTestRunMetrics</code> measures requests. <code>EngineHealthMetrics</code> measures load generators, not your app servers.</p></div>
+        <p class="hint">Choose the test/run on the left, then preview and execute <strong>Get all client metrics</strong> to see every available client metric together. This only reads the selected run; it does not start a load test.</p>
+        <div class="field-row">
+          <div><label for="client-metric">Client metric name</label><input id="client-metric" data-config="clientMetric" list="client-metric-list"><datalist id="client-metric-list"></datalist></div>
+          <div><label for="engine-metric">Engine metric name</label><input id="engine-metric" data-config="engineMetric" placeholder="CPU"></div>
+        </div>
+        <div id="actions-metrics" class="action-grid"></div>
+        <section id="client-overview" class="panel result-panel" aria-live="polite" hidden>
+          <div class="section-heading"><h2>All client metrics</h2><span id="client-metric-count" class="pill"></span></div>
+          <p id="client-metric-scope" class="hint"></p>
+          <p class="hint">One-minute buckets using CLI/service defaults. Values describe returned buckets, not whole-run totals. Missing datapoints are not assumed to be zero.</p>
+          <p id="client-metric-status" class="muted" role="status"></p>
+          <div id="client-metric-grid" class="client-metric-grid"></div>
+          <div id="client-metric-downloads" class="file-list"></div>
+        </section>
+      </section>
+
+      <section id="tab-server" class="stage" hidden>
+        <div class="stage-heading"><p class="eyebrow">WHAT THE APPLICATION SEES</p><h2>App components are monitored Azure resources.</h2>
+          <p>An App Service, its App Service plan, SQL, or Application Insights can be a component. Listing components or server-metric configuration does <strong>not</strong> return metric values. Values come from Azure Monitor.</p></div>
+        <label for="server-resource">Application resource ARM ID</label>
+        <input id="server-resource" data-config="serverResourceId" placeholder="/subscriptions/.../resourceGroups/.../providers/Microsoft.Web/sites/your-app" autocomplete="off">
+        <p id="component-description" class="hint">Inspect this resource to resolve its name/type before attaching it to the test.</p>
+        <label for="server-metric-picker">Discovered metric definitions</label>
+        <select id="server-metric-picker"><option value="">Discover server metrics first</option></select>
+        <div class="field-row">
+          <div><label for="server-metric">Metric name</label><input id="server-metric" data-config="serverMetric" placeholder="Select a discovered metric"></div>
+          <div><label for="server-aggregation">Aggregation</label><select id="server-aggregation" data-config="serverAggregation"><option>Average</option><option>Total</option><option>Minimum</option><option>Maximum</option><option>Count</option></select></div>
+        </div>
+        <label for="server-namespace">Server metric namespace</label>
+        <input id="server-namespace" data-config="serverNamespace" placeholder="Filled from the discovered definition">
+        <div class="field-row">
+          <div><label for="start-time">Run start (UTC or explicit offset)</label><input id="start-time" data-config="startTime" placeholder="Filled by Inspect run"></div>
+          <div><label for="end-time">Run end (UTC or explicit offset)</label><input id="end-time" data-config="endTime" placeholder="Filled by Inspect run"></div>
+        </div>
+        <p class="hint">Attach components and metric definitions <strong>before starting a run</strong> for repeatable Load Testing configuration. Azure Monitor reads also work directly on a resource without attaching it. Old metric values may have expired.</p>
+        <div id="actions-server" class="action-grid"></div>
+      </section>
+
+      <section id="tab-downloads" class="stage" hidden>
+        <div class="stage-heading"><p class="eyebrow">TAKE THE EVIDENCE WITH YOU</p><h2>Logs, results, metrics, and agent skills</h2>
+          <p>Wait for a terminal run state before downloading. Engine logs diagnose the generator; application logs require a separate Application Insights or Log Analytics query.</p></div>
+        <div id="actions-downloads" class="action-grid"></div>
+        <div class="skill-grid">
+          <article class="skill"><span class="eyebrow">REPOSITORY SKILL</span><h3>JMX to Locust</h3><p>Inventory the JMeter plan, preserve correlation, assertions, data and load shape, then verify parity. No claim that this repository's existing Locust example is an exact conversion.</p><code>.github/skills/jmx-to-locust</code><button id="copy-migration" class="secondary">Copy migration prompt</button></article>
+          <article class="skill"><span class="eyebrow">REPOSITORY SKILL</span><h3>Analyze load-test artifacts</h3><p>Analyze downloaded ZIPs, request results, run metadata and logs locally. Produce evidence-backed findings, separate observations from hypotheses, and flag missing data.</p><code>.github/skills/analyze-load-test-artifacts</code><button id="copy-analysis" class="secondary">Copy analysis prompt</button></article>
+        </div>
+        <button id="saved-downloads" class="secondary">Show saved downloads</button>
+        <div id="saved-files"></div>
+      </section>
+
+      <section id="run-summary" class="panel result-panel" aria-live="polite" hidden></section>
+      <section id="metric-panel" class="panel result-panel" hidden>
+        <div class="section-heading"><h2 id="metric-heading">Metric time series</h2><span id="metric-count" class="hint"></span></div>
+        <svg id="metric-chart" viewBox="0 0 700 140" role="img" aria-label="First returned metric series over time"></svg>
+        <p class="hint">First series shown above; all returned datapoints are in the JSON/CSV downloads. Empty is not zero.</p>
+        <div id="metric-table" class="table-scroll"></div>
+      </section>
+
+      <section class="panel console-panel">
+        <div class="section-heading"><div><p class="eyebrow">COMMAND PREVIEW</p><h2 id="command-label">Select a step to reveal the CLI</h2></div><span id="job-state" class="pill">READY</span></div>
+        <p id="command-description" class="muted">Nothing runs until you click Execute. Commands are allowlisted; this is not a general-purpose terminal.</p>
+        <div class="console-toolbar"><label for="shell">Shell</label><select id="shell"><option value="powershell">PowerShell</option><option value="bash">Bash</option></select><button id="copy-command" class="text-button" disabled>Copy</button><a id="script-download" class="text-button" hidden>Download step script</a></div>
+        <pre id="command" tabindex="0">az load ...</pre>
+        <p id="plan-note" class="hint"></p>
+        <label id="confirmation-row" class="confirmation" hidden><input id="confirmation" type="checkbox"><span id="confirmation-text"></span></label>
+        <button id="execute" class="primary" disabled>Execute command</button>
+        <pre id="output" class="output" tabindex="0" aria-live="polite">CLI output will appear here.</pre>
+        <div id="downloads"></div>
+      </section>
+    </section>
+  </main>
+  <footer>Local presenter tool, not a hosted control plane. Configuration stays in this browser; downloaded evidence stays on this computer. Never expose this app publicly. <a href="https://learn.microsoft.com/cli/azure/load" target="_blank" rel="noreferrer">Azure CLI reference</a></footer>
+</body>
+</html>

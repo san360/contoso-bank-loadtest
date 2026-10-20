@@ -26,6 +26,13 @@ This is a **promotion model**, not a limitation. Engineers learn in the portal a
 
 ## 17.2 The full lifecycle in the CLI
 
+> **Interactive presenter option:** [doc 26](26-cli-demo-app-and-skills.md) describes
+> the localhost CLI lab (`python -m tools.cli_demo`). It shows the actual commands
+> before executing them and provides log/result/metric downloads. App components
+> are monitored Azure resources, not metric values: `test-run app-component list`
+> and `test-run server-metric list` return configuration; server time-series values
+> come from `az monitor metrics list` on the application resource.
+
 Install once:
 
 ```bash
