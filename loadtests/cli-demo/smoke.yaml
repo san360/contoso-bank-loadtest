@@ -1,6 +1,6 @@
-# Source-controlled template. Run from the checkout root, not a Copilot session:
-# az load test create ... --load-test-config-file .\loadtests\cli-demo\smoke.yaml
-# The UI makes separate copies with the selected testId; this template stays unchanged.
+# The CLI lab generates a separate copy with the selected Test ID and authorized target.
+# The YAML preview and --load-test-config-file identify that exact generated file.
+# The source-controlled template stays unchanged when using the UI.
 version: v0.1
 testId: cli-demo-smoke
 displayName: Azure CLI demo - small health check

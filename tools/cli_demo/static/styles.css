@@ -64,7 +64,7 @@ details pre { color:var(--ink); background:var(--bg); padding:10px; border-radiu
 .pill.warning { background:#fff5dc; color:#805800; }
 .console-panel { margin-top:24px; }
 .yaml-preview { margin-top:18px; }
-.console-toolbar { display:flex; align-items:center; gap:12px; margin-top:14px; }
+.console-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-top:14px; }
 .console-toolbar label { margin:0; }
 .console-toolbar select { width:auto; padding:4px 8px; font-size:12px; }
 #script-download { margin-left:auto; }
@@ -72,7 +72,22 @@ details pre { color:var(--ink); background:var(--bg); padding:10px; border-radiu
 .confirmation { display:flex; align-items:start; gap:9px; padding:12px; background:#fff8e7; color:#6e500f; border-radius:6px; margin:14px 0; font-size:12px; font-weight:500; }
 .confirmation input { margin:3px 0 0; }
 .output { margin:16px 0 0; background:#f4f7fc; border:1px solid var(--line); border-radius:7px; padding:16px; max-height:380px; overflow:auto; color:#33455f; font-size:11px; }
-.tsv-preview pre { white-space:pre; overflow-wrap:normal; tab-size:4; }
+.command-result + .command-result { border-top:1px solid var(--line); margin-top:16px; padding-top:16px; }
+.command-result h3 { font-size:12px; }
+.raw-output { margin:10px 0 0; }
+.output-message { white-space:pre-wrap; overflow-wrap:anywhere; margin:12px 0 0; }
+.json-viewer { font:12px/1.7 "Cascadia Code", Consolas, monospace; overflow-wrap:anywhere; }
+.json-node { margin:0; font:inherit; color:inherit; }
+.json-node > summary { font-weight:400; color:var(--muted); }
+.json-children { margin-left:8px; padding-left:16px; border-left:1px solid var(--line); }
+.json-line { white-space:pre-wrap; }
+.json-key { color:var(--ink); }
+.json-string { color:#17643c; }
+.json-number { color:#075bd8; }
+.json-boolean { color:#8047a8; }
+.json-null { color:var(--muted); font-style:italic; }
+.output .section-heading { flex-wrap:wrap; }
+.output .table-scroll { margin-top:0; }
 .notice { margin:16px 28px 0; padding:12px 16px; background:#eaf2ff; border:1px solid #bed6f8; border-radius:7px; color:#174d93; }
 .notice.error { background:#fff1f0; color:#a52a23; border-color:#edc1bc; }
 .result-panel { margin-top:18px; }

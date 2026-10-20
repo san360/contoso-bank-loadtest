@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from .commands import (
     ACTION_BY_ID, ROOT, Command, Config, build_commands, csv_export, metric_rows,
-    public_actions, redact, run_verdict, script_for, tsv_export,
+    parse_test_list_tsv, public_actions, redact, render_test_config, run_verdict, script_for, tsv_export,
 )
 
 LOG = logging.getLogger("cli_demo")
@@ -158,10 +158,7 @@ class App:
                     content = template.read_text(encoding="utf-8")
                 except OSError as exc:
                     raise ValueError(f"Could not read the demo YAML configuration ({template}): {exc}") from exc
-                content, count = re.subn(r"(?m)^testId:.*$",
-                                         lambda _: f"testId: {json.dumps(config.testId)}", content)
-                if count != 1:
-                    raise ValueError("The demo YAML must define exactly one top-level testId.")
+                content = render_test_config(content, config)
                 args = commands[0].args
                 config_file = Path(args[args.index("--load-test-config-file") + 1])
                 if not config_file.is_absolute():
@@ -172,7 +169,8 @@ class App:
                     config_file.write_text(content, encoding="utf-8")
                 except OSError as exc:
                     raise ValueError(f"Could not prepare the demo YAML and JMX files ({config_file}): {exc}") from exc
-                test_config = {"path": args[args.index("--load-test-config-file") + 1], "content": content}
+                test_config = {"path": args[args.index("--load-test-config-file") + 1],
+                               "sourcePath": str(template.relative_to(ROOT)), "content": content}
             plan = Plan(id_, action, config, commands, directory, test_config=test_config)
             self.plans[id_] = plan
         return plan.public()
@@ -259,13 +257,18 @@ class App:
                 ):
                     raise ValueError("No new artifact files were downloaded, despite the CLI's zero exit code. "
                                      "Check artifact availability and ingestion delay; inspect stdout below.")
-                if command.artifact:
+                if command.artifact == "tests.tsv":
+                    table, content = parse_test_list_tsv(stdout)
+                    (plan.directory / command.artifact).write_text(content, encoding="utf-8", newline="")
+                    entry["table"] = table
+                elif command.artifact:
                     try:
                         data = redact(json.loads(result.stdout)) if (result.stdout or "").strip() else None
                     except json.JSONDecodeError as exc:
                         raise ValueError("Azure CLI returned non-JSON output. Inspect stdout; "
                                          "no result data was invented.") from exc
                     entry["data"] = data
+                    entry["format"] = "json"
                     entry["stdout"] = json.dumps(data, indent=2, ensure_ascii=True)[-24000:]
                     (plan.directory / command.artifact).write_text(
                         json.dumps(data, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")

@@ -160,6 +160,23 @@ confirmed **Select CLI subscription** step.
 
 ## Suggested presenter flow
 
+On **Create & run**, choose **List test definitions output** before previewing
+**List test definitions**. **JSON** keeps the complete response and displays it
+in an expandable, type-colored viewer; use **Copy JSON** for pretty-printed JSON.
+Other JSON command results use the same viewer. **Raw CLI output** retains the
+command, stdout and stderr for troubleshooting.
+
+**TSV** changes the actual command to `--output tsv` with an ordered `--query`
+projection of test ID, display name, test type and engine count. The UI displays
+these as columns, not raw tabs, and provides **Copy TSV** and a headered
+`tests.tsv` download. Tables preview at most 200 rows; copying/downloading
+retains every returned row. The copied command and downloaded step script honor
+the chosen format. This selector affects only listing test definitions; metric
+commands continue requesting JSON so nested datapoints can be flattened correctly.
+Definitions with embedded tabs/newlines cannot be reliably represented by the
+CLI's unquoted TSV output; the app reports misaligned rows explicitly and asks
+for JSON instead.
+
 ### 1. Create a test definition
 
 Use a distinct test ID such as `cli-demo-smoke`. Set an authorized target URL, for
@@ -171,18 +188,23 @@ generated file; the CLI preview, **Copy** and **Download step script** use the s
 selected test configuration in PowerShell or Bash. Confirm the target, then execute.
 
 Each create preview writes a separate `smoke.yaml` with `testId` taken from the
-form's **Test ID**, plus a copy of `smoke.jmx` beside it. The files live in the
+form's **Test ID** and environment values taken from the **Authorized target URL**,
+plus a copy of `smoke.jmx` beside it. The files live in the
 local artifact directory (by default,
 `.loadtest-demo/artifacts/<preview-id>/`). This prepares local inputs only;
 previewing does not execute Azure CLI or create anything in Azure. The generated
 YAML shown and copied in the UI is the exact file used by the command and
 downloaded step scripts. Separate previews do not overwrite each other's inputs.
-After changing the Test ID, preview **Create** again before executing it.
+After changing the Test ID or target URL, preview **Create** again before executing it.
 
 With the default data directory, the CLI uses a **checkout-relative** path such as
 `.loadtest-demo\artifacts\<preview-id>\smoke.yaml`, not an absolute Copilot
 worktree/session path. The server resolves that path from the repository root.
 An explicitly configured external `--data-dir` is respected for local execution.
+The preview labels the **source template** and **generated file** separately.
+The latter is the exact path passed to `--load-test-config-file`; the source
+template is not accidentally loaded in its place. Bash command previews use
+Bash-compatible path separators.
 
 Downloaded **create-step scripts** are portable to another normal checkout:
 run the script from that checkout's root. It writes the selected YAML into a
@@ -205,10 +227,14 @@ clone of `main` includes the source templates and the runnable app.
 The test uses **one engine, five users, ten-second ramp-up, 60-second scheduled
 duration, one-second per-user pacing**, and one GET request. A 200 response is
 asserted; error percentage and average response time have fail criteria.
-`example.invalid` in the YAML is an intentionally unusable placeholder; the UI
-supplies the actual host, scheme, port and path with `--env`. The CLI's
-`--test-id` matches the selected test ID written into the generated YAML.
-The target arguments override the YAML's placeholder values. Users, ramp-up, duration and pacing
+`example.invalid` in the **source template** is an intentionally unusable
+placeholder. The UI replaces it in the **generated YAML** with the authorized
+host, and also writes the selected scheme, port and path (including query
+parameters) into `DEMO_PROTOCOL`, `DEMO_PORT` and `DEMO_PATH`. The CLI's `--env`
+arguments contain those same values, not a different target, and its `--test-id`
+matches the selected test ID written into the generated YAML. Copying YAML or
+downloading a step script therefore retains the authorized target.
+Users, ramp-up, duration and pacing
 are defined in the referenced JMX, not by `engineInstances` alone.
 
 The YAML uses the [official Azure Load Testing configuration format](https://learn.microsoft.com/en-us/azure/app-testing/load-testing/reference-test-config-yaml),
@@ -299,7 +325,7 @@ response cannot overwrite results for a newly selected scope.
 while **Get engine health** remains separate. Both keep the existing single-series
 chart/table and JSON/CSV/TSV exports.
 
-Expand **View flattened TSV** to list the tab-separated rows and use **Copy TSV**
+Expand **View flattened TSV as columns** to read an aligned table and use **Copy TSV**
 to paste them into a terminal, spreadsheet, or another tool. TSV files have a
 header and the same columns as CSV: `timestamp`, `namespace`, `metric`, `unit`,
 `dimensions`, `aggregation`, and `value`. Names and units stay attached to every

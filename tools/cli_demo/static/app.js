@@ -99,6 +99,7 @@ function renderCommand() {
   if (!plan) return;
   const shell = $("shell").value;
   $("yaml-preview").hidden = !plan.testConfig;
+  $("yaml-source-path").textContent = plan.testConfig?.sourcePath || "";
   $("yaml-path").textContent = plan.testConfig?.path || "";
   $("yaml-content").textContent = plan.testConfig?.content || "";
   $("command").textContent = plan.commands.map((item) => item[shell]).join("\n\n");
@@ -163,6 +164,94 @@ function table(headers, rows) {
   });
   element.append(head, body);
   return element;
+}
+
+function columnPreview(headers, rows, total = rows.length) {
+  const preview = document.createElement("div");
+  const count = document.createElement("p");
+  count.className = "hint";
+  count.textContent = total > 200
+    ? `Showing the first 200 of ${total} rows. Copy or download TSV for every row.`
+    : `${total} ${total === 1 ? "row" : "rows"} returned.`;
+  const wrapper = document.createElement("div");
+  wrapper.className = "table-scroll";
+  wrapper.append(table(headers, rows.slice(0, 200)));
+  preview.append(count, wrapper);
+  return preview;
+}
+
+function jsonPreview(data) {
+  const preview = document.createElement("div");
+  preview.className = "json-preview";
+  const toolbar = document.createElement("div");
+  toolbar.className = "section-heading";
+  const hint = document.createElement("span");
+  hint.className = "hint";
+  hint.textContent = "JSON - expand objects and arrays to inspect their values.";
+  const copy = document.createElement("button");
+  copy.className = "text-button";
+  copy.textContent = "Copy JSON";
+  copy.addEventListener("click", handle(async () => {
+    await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+    notify("JSON copied.");
+  }));
+  toolbar.append(hint, copy);
+  const tree = document.createElement("div");
+  tree.className = "json-viewer";
+  tree.setAttribute("role", "group");
+  tree.setAttribute("aria-label", "Expandable JSON result");
+
+  function node(value, key = null, root = false) {
+    const label = document.createElement("span");
+    label.className = "json-key";
+    label.textContent = key === null ? "" : `${typeof key === "number" ? `[${key}]` : JSON.stringify(key)}: `;
+    const size = value !== null && typeof value === "object" ? Object.keys(value).length : 0;
+    if (size) {
+      const details = document.createElement("details");
+      details.className = "json-node";
+      const summary = document.createElement("summary");
+      const description = document.createElement("span");
+      const array = Array.isArray(value);
+      description.textContent = array ? `[${size} ${size === 1 ? "item" : "items"}]`
+        : `{${size} ${size === 1 ? "property" : "properties"}}`;
+      summary.append(label, description);
+      const children = document.createElement("div");
+      children.className = "json-children";
+      let populated = false;
+      function populate() {
+        if (populated) return;
+        populated = true;
+        Object.entries(value).forEach(([name, child]) => children.append(node(child, array ? Number(name) : name)));
+      }
+      details.addEventListener("toggle", () => { if (details.open) populate(); });
+      if (root) {
+        populate();
+        details.open = true;
+      }
+      details.append(summary, children);
+      return details;
+    }
+    const line = document.createElement("div");
+    line.className = "json-line";
+    const scalar = document.createElement("span");
+    scalar.className = `json-${value === null ? "null" : typeof value}`;
+    scalar.textContent = JSON.stringify(value);
+    line.append(label, scalar);
+    return line;
+  }
+
+  tree.append(node(data, null, true));
+  preview.append(toolbar, tree);
+  return preview;
+}
+
+async function fileText(file) {
+  const response = await fetch(file.url);
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || `Could not load ${file.name} (${response.status}).`);
+  }
+  return response.text();
 }
 
 function arrayOf(data) {
@@ -306,41 +395,22 @@ function renderTsvPreview(containerId, job, artifact) {
   const details = document.createElement("details");
   details.className = "tsv-preview";
   const summary = document.createElement("summary");
-  summary.textContent = "View flattened TSV";
+  summary.textContent = "View flattened TSV as columns";
   const toolbar = document.createElement("div");
   toolbar.className = "file-list";
   const copy = document.createElement("button");
   copy.className = "secondary";
   copy.textContent = "Copy TSV";
-  const output = document.createElement("pre");
-  output.className = "output";
-  output.tabIndex = 0;
-  output.textContent = "Expand to load the headered, tab-separated metric rows.";
-  let text;
-  let pending;
-  function loadTsv() {
-    if (text !== undefined) return Promise.resolve(text);
-    if (!pending) {
-      pending = (async () => {
-        output.textContent = "Loading TSV...";
-        const response = await fetch(file.url);
-        if (!response.ok) {
-          const error = await response.json();
-          throw new Error(error.error || `Could not load TSV (${response.status}).`);
-        }
-        text = await response.text();
-        output.textContent = text;
-        return text;
-      })().catch((error) => {
-        output.textContent = `TSV preview unavailable: ${error.message}`;
-        throw error;
-      }).finally(() => { pending = null; });
+  const columns = ["timestamp", "namespace", "metric", "unit", "dimensions", "aggregation", "value"];
+  const rows = job.commands.find((entry) => entry.artifact === artifact)?.metricRows || [];
+  const output = document.createElement("div");
+  details.addEventListener("toggle", () => {
+    if (details.open && !output.childElementCount) {
+      output.append(columnPreview(columns, rows.slice(0, 200).map((row) => columns.map((key) => row[key])), rows.length));
     }
-    return pending;
-  }
-  details.addEventListener("toggle", handle(async () => { if (details.open) await loadTsv(); }));
+  });
   copy.addEventListener("click", handle(async () => {
-    await navigator.clipboard.writeText(await loadTsv());
+    await navigator.clipboard.writeText(await fileText(file));
     notify("Flattened TSV copied.");
   }));
   toolbar.append(copy);
@@ -473,16 +543,61 @@ function filesFor(job, target) {
 function renderJob(job) {
   $("job-state").textContent = job.state.toUpperCase();
   $("job-state").className = `pill ${job.state === "failed" ? "bad" : job.state === "succeeded" ? "good" : ""}`;
-  const chunks = job.commands.map((entry) => [
-    `$ ${entry.command}`,
-    `Exit ${entry.exitCode} | ${entry.durationSeconds}s`,
-    entry.stdout || "(no stdout)",
-    entry.stderr ? `stderr:\n${entry.stderr}` : "",
-  ].filter(Boolean).join("\n"));
-  if (job.currentCommand) chunks.push(`Running: ${job.currentCommand}`);
-  if (job.error) chunks.push(`ERROR: ${job.error}`);
-  if (job.warnings.length) chunks.push(`WARNINGS:\n${job.warnings.join("\n")}`);
-  $("output").textContent = chunks.join("\n\n") || "Queued...";
+  const output = $("output");
+  output.replaceChildren();
+  job.commands.forEach((entry) => {
+    const hasJson = entry.format === "json" && Object.hasOwn(entry, "data");
+    const section = document.createElement("section");
+    section.className = "command-result";
+    const heading = document.createElement("h3");
+    heading.textContent = `${entry.artifact || "CLI output"} | Exit ${entry.exitCode} | ${entry.durationSeconds}s`;
+    section.append(heading);
+    if (entry.table) {
+      const toolbar = document.createElement("div");
+      toolbar.className = "section-heading";
+      const title = document.createElement("span");
+      title.textContent = "TSV - test definitions";
+      toolbar.append(title);
+      const file = job.files.find((item) => item.name === entry.artifact);
+      if (file) {
+        const copy = document.createElement("button");
+        copy.className = "text-button";
+        copy.textContent = "Copy TSV";
+        copy.addEventListener("click", handle(async () => {
+          await navigator.clipboard.writeText(await fileText(file));
+          notify("Headered TSV copied.");
+        }));
+        toolbar.append(copy);
+      }
+      section.append(toolbar, columnPreview(entry.table.headers, entry.table.rows));
+    } else if (hasJson) section.append(jsonPreview(entry.data));
+    const raw = document.createElement("pre");
+    raw.className = "raw-output";
+    raw.textContent = [
+      `$ ${entry.command}`, entry.stdout || "(no stdout)",
+      entry.stderr ? `stderr:\n${entry.stderr}` : "",
+    ].filter(Boolean).join("\n\n");
+    if (entry.table || hasJson) {
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = "Raw CLI output";
+      details.open = Boolean(entry.stderr);
+      details.append(summary, raw);
+      section.append(details);
+    } else section.append(raw);
+    output.append(section);
+  });
+  const messages = [];
+  if (job.currentCommand) messages.push(`Running: ${job.currentCommand}`);
+  if (job.error) messages.push(`ERROR: ${job.error}`);
+  if (job.warnings.length) messages.push(`WARNINGS:\n${job.warnings.join("\n")}`);
+  if (!job.commands.length && !messages.length) messages.push("Queued...");
+  messages.forEach((message) => {
+    const line = document.createElement("p");
+    line.className = "output-message";
+    line.textContent = message;
+    output.append(line);
+  });
   $("downloads").replaceChildren();
   if (!["queued", "running"].includes(job.state)) filesFor(job, $("downloads"));
 }
@@ -681,7 +796,7 @@ async function bootstrap() {
   }));
   $("copy-yaml").addEventListener("click", handle(async () => {
     await navigator.clipboard.writeText(plan.testConfig.content);
-    notify("YAML copied with the selected Test ID. The CLI preview supplies the target.");
+    notify("YAML copied with the selected Test ID and authorized target.");
   }));
   $("copy-migration").addEventListener("click", handle(async () => {
     await navigator.clipboard.writeText("Use the jmx-to-locust skill to convert loadtests/jmeter/contoso-bank.jmx into a new Locust test. Inventory its behavior first, preserve correlation, data, assertions and load shape, document gaps, and verify parity. Do not overwrite the existing Locust demo.");

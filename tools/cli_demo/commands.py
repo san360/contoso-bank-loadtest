@@ -21,6 +21,7 @@ SECRET_KEY = re.compile(
     r"(?i)(password|passwd|secret|token|authorization|api[-_]?key|"
     r"connection[-_]?string|^sig$|^sas$)"
 )
+TEST_LIST_COLUMNS = ("Test ID", "Display name", "Type", "Engines")
 
 
 @dataclass(frozen=True)
@@ -43,9 +44,9 @@ ACTIONS = (
     Action("resources", "Find Load Testing resources", "setup",
            "Discovers existing resources in the selected subscription; creates nothing."),
     Action("list-tests", "List test definitions", "lifecycle",
-           "A definition is a reusable script and configuration, not an execution."),
+           "Choose JSON or readable TSV columns. A definition is a reusable script and configuration, not an execution."),
     Action("create-test", "Create the small demo test", "lifecycle",
-           "Uses YAML generated with your Test ID via --load-test-config-file: one engine, five users, 60 seconds, GET only.",
+           "Uses YAML generated with your Test ID and authorized target: one engine, five users, 60 seconds, GET only.",
            "This creates the selected test ID. I have permission to test the target."),
     Action("show-test", "Inspect test definition", "lifecycle",
            "Checks the uploaded configuration before spending virtual user hours."),
@@ -106,6 +107,7 @@ class Config:
     testId: str = "cli-demo-smoke"
     runId: str = ""
     targetUrl: str = ""
+    testListOutput: str = "json"
     clientMetric: str = "ResponseTime"
     engineMetric: str = "CPU"
     serverResourceId: str = ""
@@ -133,7 +135,10 @@ class Config:
                 raise ValueError(f"{key} must not contain control characters.")
             if item.strip().startswith("-"):
                 raise ValueError(f"{key} must not be an option.")
-        return cls(**{key: item.strip() for key, item in value.items()})
+        config = cls(**{key: item.strip() for key, item in value.items()})
+        if config.testListOutput not in {"json", "tsv"}:
+            raise ValueError("Choose json or tsv for testListOutput.")
+        return config
 
     def require(self, *names: str) -> None:
         for name in names:
@@ -205,6 +210,10 @@ class Command:
 def shell_command(args: tuple[str, ...] | list[str], shell: str = "powershell") -> str:
     tokens = ["az", *args]
     if shell == "bash":
+        for option in ("--load-test-config-file", "--path"):
+            if option in tokens:
+                index = tokens.index(option) + 1
+                tokens[index] = Path(tokens[index]).as_posix()
         return shlex.join(tokens)
     def quote(token: str) -> str:
         if re.fullmatch(r"[A-Za-z0-9_./:=@-]+", token):
@@ -282,14 +291,28 @@ def target_environment(target: str) -> list[str]:
             f"DEMO_PORT={port}", f"DEMO_PATH={path}"]
 
 
+def render_test_config(template: str, config: Config) -> str:
+    content, count = re.subn(r"(?m)^testId:.*$",
+                            lambda _: f"testId: {json.dumps(config.testId)}", template)
+    if count != 1:
+        raise ValueError("The demo YAML must define exactly one top-level testId.")
+    for assignment in target_environment(config.targetUrl)[1:]:
+        name, value = assignment.split("=", 1)
+        pattern = rf"(?m)^(  - name: {name}\r?\n    value:)[^\r\n]*"
+        content, count = re.subn(pattern, lambda match: f"{match[1]} {json.dumps(value)}", content)
+        if count != 1:
+            raise ValueError(f"The demo YAML must define exactly one env value for {name}.")
+    return content
+
+
 def build_commands(action_id: str, config: Config, artifact_dir: Path) -> list[Command]:
     if action_id not in ACTION_BY_ID:
         raise ValueError("Unknown demo action. Arbitrary commands are not supported.")
-    common = ["--only-show-errors", "--output", "json"]
-
     def command(args: list[str], artifact: str = "", metric: str = "",
                 namespace: str = "", download: bool = False) -> Command:
-        return Command(tuple([*args, *common]), artifact, metric, namespace, download)
+        output = "tsv" if artifact.endswith(".tsv") else "json"
+        return Command(tuple([*args, "--only-show-errors", "--output", output]),
+                       artifact, metric, namespace, download)
 
     if action_id == "subscriptions":
         return [command(["account", "list", "--query",
@@ -347,6 +370,12 @@ def build_commands(action_id: str, config: Config, artifact_dir: Path) -> list[C
                      "--path", str(artifact_dir / "files"), "--force", flag], download=True)
 
     if action_id == "list-tests":
+        if config.testListOutput == "tsv":
+            return [load(["test", "list", "--query",
+                          "[].[testId,displayName,testType,loadTestConfiguration.engineInstances]"],
+                         "tests.tsv")]
+        if config.testListOutput != "json":
+            raise ValueError("Choose json or tsv for testListOutput.")
         return [load(["test", "list"], "tests.json")]
     if action_id == "create-test":
         config.require("targetUrl")
@@ -529,6 +558,27 @@ def metric_rows(payload: Any, metric: str = "", namespace: str = "",
     return rows
 
 
+def _spreadsheet_value(value: Any) -> Any:
+    if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r")):
+        return "'" + value
+    return value
+
+
+def parse_test_list_tsv(stdout: str) -> tuple[dict[str, Any], str]:
+    try:
+        rows = list(csv.reader(io.StringIO(stdout), delimiter="\t", quoting=csv.QUOTE_NONE))
+    except csv.Error as exc:
+        raise ValueError("Could not read Azure CLI TSV output. Select JSON and inspect raw stdout below.") from exc
+    if any(len(row) != len(TEST_LIST_COLUMNS) for row in rows):
+        raise ValueError("Azure CLI returned unexpected TSV columns. Select JSON for definitions "
+                         "containing embedded tabs or newlines; inspect raw stdout below.")
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, delimiter="\t")
+    writer.writerow(TEST_LIST_COLUMNS)
+    writer.writerows([_spreadsheet_value(value) for value in row] for row in rows)
+    return {"headers": list(TEST_LIST_COLUMNS), "rows": rows}, output.getvalue()
+
+
 def _delimited_export(payload: Any, metric: str, namespace: str, definitions: Any, delimiter: str) -> str:
     output = io.StringIO(newline="")
     columns = ["timestamp", "namespace", "metric", "unit", "dimensions", "aggregation", "value"]
@@ -536,9 +586,7 @@ def _delimited_export(payload: Any, metric: str, namespace: str, definitions: An
     writer.writeheader()
     for row in metric_rows(payload, metric, namespace, definitions):
         # Downloads can be opened in Excel; do not allow a metric/dimension to become a formula.
-        writer.writerow({key: "'" + value if isinstance(value, str)
-                         and value.startswith(("=", "+", "-", "@", "\t", "\r")) else value
-                         for key, value in row.items()})
+        writer.writerow({key: _spreadsheet_value(value) for key, value in row.items()})
     return output.getvalue()
 
 
