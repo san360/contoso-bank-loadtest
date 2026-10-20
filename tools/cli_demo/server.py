@@ -103,6 +103,7 @@ class Plan:
     config: Config
     commands: list[Command]
     directory: Path
+    test_config: dict[str, str] | None = None
     created: float = field(default_factory=time.monotonic)
     started: bool = False
 
@@ -117,6 +118,7 @@ class Plan:
         return {"id": self.id, "action": self.action, "label": action.label,
                 "description": action.description, "confirmation": action.confirmation,
                 "commands": [command.public() for command in self.commands],
+                "testConfig": self.test_config,
                 "artifactDirectory": str(self.directory), "note": note}
 
 
@@ -137,7 +139,6 @@ class App:
         id_ = uuid.uuid4().hex
         directory = self.artifacts / id_
         commands = build_commands(action, config, directory)
-        plan = Plan(id_, action, config, commands, directory)
         with self.lock:
             expired = [key for key, item in self.plans.items()
                        if time.monotonic() - item.created > PLAN_LIFETIME]
@@ -149,6 +150,27 @@ class App:
                 if not completed:
                     raise ValueError("Too many open previews. Wait for them to expire or restart the app.")
                 del self.plans[completed[0]]
+            test_config = None
+            if action == "create-test":
+                template = ROOT / "loadtests" / "cli-demo" / "smoke.yaml"
+                try:
+                    content = template.read_text(encoding="utf-8")
+                except OSError as exc:
+                    raise ValueError(f"Could not read the demo YAML configuration ({template}): {exc}") from exc
+                content, count = re.subn(r"(?m)^testId:.*$",
+                                         lambda _: f"testId: {json.dumps(config.testId)}", content)
+                if count != 1:
+                    raise ValueError("The demo YAML must define exactly one top-level testId.")
+                args = commands[0].args
+                config_file = Path(args[args.index("--load-test-config-file") + 1])
+                try:
+                    config_file.parent.mkdir(parents=True)
+                    shutil.copyfile(template.with_suffix(".jmx"), config_file.with_suffix(".jmx"))
+                    config_file.write_text(content, encoding="utf-8")
+                except OSError as exc:
+                    raise ValueError(f"Could not prepare the demo YAML and JMX files ({config_file}): {exc}") from exc
+                test_config = {"path": str(config_file), "content": content}
+            plan = Plan(id_, action, config, commands, directory, test_config=test_config)
             self.plans[id_] = plan
         return plan.public()
 
@@ -204,7 +226,7 @@ class App:
         terminal_state = "failed"
         client_definitions = None
         try:
-            plan.directory.mkdir(parents=True)
+            plan.directory.mkdir(parents=True, exist_ok=True)
             with self.lock:
                 job["state"] = "running"
             self._persist(plan)

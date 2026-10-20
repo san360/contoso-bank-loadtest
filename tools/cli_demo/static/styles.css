@@ -63,11 +63,12 @@ details pre { color:var(--ink); background:var(--bg); padding:10px; border-radiu
 .pill.bad { background:#fff0ef; color:#ac2821; }
 .pill.warning { background:#fff5dc; color:#805800; }
 .console-panel { margin-top:24px; }
+.yaml-preview { margin-top:18px; }
 .console-toolbar { display:flex; align-items:center; gap:12px; margin-top:14px; }
 .console-toolbar label { margin:0; }
 .console-toolbar select { width:auto; padding:4px 8px; font-size:12px; }
 #script-download { margin-left:auto; }
-#command { margin:10px 0; background:#101b2e; color:#d6e8ff; border-radius:8px; padding:18px; line-height:1.7; max-height:380px; overflow:auto; }
+#command, #yaml-content { margin:10px 0; background:#101b2e; color:#d6e8ff; border-radius:8px; padding:18px; line-height:1.7; max-height:380px; overflow:auto; }
 .confirmation { display:flex; align-items:start; gap:9px; padding:12px; background:#fff8e7; color:#6e500f; border-radius:6px; margin:14px 0; font-size:12px; font-weight:500; }
 .confirmation input { margin:3px 0 0; }
 .output { margin:16px 0 0; background:#f4f7fc; border:1px solid var(--line); border-radius:7px; padding:16px; max-height:380px; overflow:auto; color:#33455f; font-size:11px; }

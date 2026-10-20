@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.cli_demo.commands import (
-    ACTIONS, Config, build_commands, csv_export, metric_rows, redact, run_verdict, shell_command,
+    ACTIONS, ROOT, Config, build_commands, csv_export, metric_rows, redact, run_verdict, shell_command,
 )
 from tools.cli_demo.server import App, CliRunner, DemoServer, azure_launcher
 
@@ -135,9 +135,16 @@ class CommandTests(unittest.TestCase):
 
     def test_small_test_is_fixed_and_target_is_one_argument(self):
         args = build_commands("create-test", CONFIG, Path("output"))[0].args
+        self.assertEqual(args[:3], ("load", "test", "create"))
+        config_file = Path(args[args.index("--load-test-config-file") + 1])
+        self.assertEqual(config_file, Path("output") / "smoke.yaml")
+        self.assertEqual(args[args.index("--test-id") + 1], CONFIG.testId)
+        self.assertIn("DEMO_HOST=example.invalid", args)
+        self.assertIn("DEMO_PROTOCOL=https", args)
+        self.assertIn("DEMO_PORT=443", args)
         self.assertIn("DEMO_PATH=/health?a=1&b=2", args)
-        self.assertTrue(any(value.endswith("smoke.yaml") for value in args))
         self.assertNotIn("--engine-instances", args)
+        self.assertNotIn("--test-plan", args)
 
     def test_target_rejects_credentials_and_localhost(self):
         for target in ("file:///tmp/test", "https://user:pass@example.invalid/",
@@ -329,9 +336,46 @@ class JobTests(unittest.TestCase):
 
     def test_preview_is_not_execution_and_requires_confirmation(self):
         preview = self.app.preview("run-test", asdict(CONFIG))
+        self.assertIsNone(preview["testConfig"])
         self.assertFalse(Path(preview["artifactDirectory"]).exists())
         with self.assertRaisesRegex(ValueError, "Confirm"):
             self.app.start(preview["id"], False)
+
+    def test_create_previews_freeze_ui_test_ids_without_editing_template(self):
+        template = ROOT / "loadtests" / "cli-demo" / "smoke.yaml"
+        original = template.read_bytes()
+        previews = []
+        with patch.object(self.app, "runner", side_effect=fake_runner) as runner:
+            for test_id in ("cli-demo-smoke-1", "cli-demo-smoke-2", "123", "true"):
+                preview = self.app.preview("create-test", asdict(replace(CONFIG, testId=test_id)))
+                previews.append(preview)
+                args = preview["commands"][0]["argv"]
+                self.assertEqual(args[args.index("--test-id") + 1], test_id)
+                test_id_line = next(line for line in preview["testConfig"]["content"].splitlines()
+                                    if line.startswith("testId:"))
+                self.assertEqual(json.loads(test_id_line.removeprefix("testId:").strip()), test_id)
+            runner.assert_not_called()
+            self.assertEqual(len({preview["testConfig"]["path"] for preview in previews}), len(previews))
+            first = previews[0]
+            self.app.start(first["id"], True)
+            job = wait_job(self.app, first["id"])
+            self.assertEqual(job["state"], "succeeded", job["error"])
+            runner.assert_called_once()
+            command = runner.call_args.args[0]
+            config_file = Path(command.args[command.args.index("--load-test-config-file") + 1])
+            self.assertEqual(config_file.read_text(encoding="utf-8"), first["testConfig"]["content"])
+            self.assertIn('testId: "cli-demo-smoke-1"', first["testConfig"]["content"])
+            self.assertTrue({"smoke.yaml", "smoke.jmx", "manifest.json", "test.json"}.issubset(
+                {file["name"] for file in job["files"]}))
+        self.assertEqual(template.read_bytes(), original)
+
+    def test_create_preview_requires_exactly_one_template_test_id(self):
+        for content in ("version: v0.1\n", "testId: first\ntestId: second\n"):
+            with self.subTest(content=content):
+                with patch("tools.cli_demo.server.Path.read_text", return_value=content):
+                    with self.assertRaisesRegex(ValueError, "exactly one.*testId"):
+                        self.app.preview("create-test", asdict(CONFIG))
+        self.assertEqual(self.app.jobs, {})
 
     def test_all_client_metric_job_persists_raw_empty_series_and_labeled_exports(self):
         preview = self.app.preview("all-client-metrics", asdict(CONFIG))
@@ -532,6 +576,7 @@ class HttpTests(unittest.TestCase):
         status, headers, data = self.request("/", authenticated=False)
         self.assertEqual(status, 200)
         self.assertIn(b"CLI lab", data)
+        self.assertIn(b'href="https://learn.microsoft.com/en-us/azure/app-testing/load-testing/reference-test-config-yaml"', data)
         self.assertIn("SameSite=Strict", headers["Set-Cookie"])
         self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
 
@@ -557,6 +602,46 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.request("/api/bootstrap", headers={"Cookie": 'cli_demo="\\351"'})[0], 403)
         self.assertEqual(self.request("/api/preview", {"action": "account"},
                                       headers={"X-Demo-Token": "\xe9"})[0], 403)
+
+    def test_create_preview_shows_yaml_used_by_both_step_scripts(self):
+        test_id = "cli-demo-smoke-1"
+        with patch.object(self.app, "runner") as runner:
+            status, _, body = self.request("/api/preview", {
+                "action": "create-test", "config": asdict(replace(CONFIG, testId=test_id)),
+            })
+        self.assertEqual(status, 200, body)
+        runner.assert_not_called()
+        preview = json.loads(body)
+        args = preview["commands"][0]["argv"]
+        config_file = Path(args[args.index("--load-test-config-file") + 1])
+        self.assertEqual(config_file, Path(preview["artifactDirectory"]) / "smoke.yaml")
+        self.assertEqual(preview["testConfig"], {
+            "path": str(config_file), "content": config_file.read_text(encoding="utf-8"),
+        })
+        self.assertIn(f'testId: "{test_id}"', preview["testConfig"]["content"])
+        self.assertIn("testPlan: smoke.jmx", preview["testConfig"]["content"])
+        self.assertEqual(config_file.with_suffix(".jmx").read_bytes(),
+                         (ROOT / "loadtests" / "cli-demo" / "smoke.jmx").read_bytes())
+        self.assertFalse(config_file.with_name("manifest.json").exists())
+        self.assertNotIn(preview["id"], self.app.jobs)
+        self.assertNotIn(preview["id"], {job["id"] for job in self.app.saved_artifacts()})
+        for shell in ("powershell", "bash"):
+            with self.subTest(shell=shell):
+                status, _, script = self.request(f"/api/plans/{preview['id']}/script?shell={shell}")
+                self.assertEqual(status, 200)
+                self.assertIn(preview["commands"][0][shell].encode("utf-8"), script)
+
+    def test_create_preview_reports_unreadable_yaml(self):
+        with patch("tools.cli_demo.server.Path.read_text", side_effect=FileNotFoundError("smoke.yaml")):
+            status, _, body = self.request("/api/preview", {"action": "create-test", "config": asdict(CONFIG)})
+        self.assertEqual(status, 400, body)
+        self.assertIn("Could not read the demo YAML", json.loads(body)["error"])
+
+    def test_create_preview_reports_unwritable_generated_yaml(self):
+        with patch("tools.cli_demo.server.Path.write_text", side_effect=PermissionError("Read-only directory")):
+            status, _, body = self.request("/api/preview", {"action": "create-test", "config": asdict(CONFIG)})
+        self.assertEqual(status, 400, body)
+        self.assertIn("Could not prepare the demo YAML", json.loads(body)["error"])
 
     def test_preview_execute_download_round_trip(self):
         status, _, body = self.request("/api/preview", {"action": "collect-evidence", "config": asdict(CONFIG)})

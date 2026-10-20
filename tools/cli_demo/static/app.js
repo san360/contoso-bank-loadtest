@@ -67,6 +67,7 @@ function updateExecute() {
 
 function invalidate() {
   plan = null;
+  $("yaml-preview").hidden = true;
   $("script-download").hidden = true;
   $("copy-command").disabled = true;
   $("confirmation-row").hidden = true;
@@ -97,6 +98,9 @@ function switchTab(name) {
 function renderCommand() {
   if (!plan) return;
   const shell = $("shell").value;
+  $("yaml-preview").hidden = !plan.testConfig;
+  $("yaml-path").textContent = plan.testConfig?.path || "";
+  $("yaml-content").textContent = plan.testConfig?.content || "";
   $("command").textContent = plan.commands.map((item) => item[shell]).join("\n\n");
   $("script-download").href = `/api/plans/${plan.id}/script?shell=${shell}`;
 }
@@ -618,6 +622,10 @@ async function bootstrap() {
   $("copy-command").addEventListener("click", handle(async () => {
     await navigator.clipboard.writeText($("command").textContent);
     notify("Command copied.");
+  }));
+  $("copy-yaml").addEventListener("click", handle(async () => {
+    await navigator.clipboard.writeText(plan.testConfig.content);
+    notify("YAML copied with the selected Test ID. The CLI preview supplies the target.");
   }));
   $("copy-migration").addEventListener("click", handle(async () => {
     await navigator.clipboard.writeText("Use the jmx-to-locust skill to convert loadtests/jmeter/contoso-bank.jmx into a new Locust test. Inventory its behavior first, preserve correlation, data, assertions and load shape, document gaps, and verify parity. Do not overwrite the existing Locust demo.");
