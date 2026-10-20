@@ -165,7 +165,7 @@ test** to show the actual **Azure Load Testing YAML** above the **CLI shell**
 preview. Explain the YAML first, then the `az load test create
 --load-test-config-file ...` command that reads it. **Copy YAML** copies the
 generated file; the CLI preview, **Copy** and **Download step script** use the same
-creation command in PowerShell or Bash. Confirm the target, then execute.
+selected test configuration in PowerShell or Bash. Confirm the target, then execute.
 
 Each create preview writes a separate `smoke.yaml` with `testId` taken from the
 form's **Test ID**, plus a copy of `smoke.jmx` beside it. The files live in the
@@ -176,11 +176,28 @@ YAML shown and copied in the UI is the exact file used by the command and
 downloaded step scripts. Separate previews do not overwrite each other's inputs.
 After changing the Test ID, preview **Create** again before executing it.
 
+With the default data directory, the CLI uses a **checkout-relative** path such as
+`.loadtest-demo\artifacts\<preview-id>\smoke.yaml`, not an absolute Copilot
+worktree/session path. The server resolves that path from the repository root.
+An explicitly configured external `--data-dir` is respected for local execution.
+
+Downloaded **create-step scripts** are portable to another normal checkout:
+run the script from that checkout's root. It writes the selected YAML into a
+local ignored `.loadtest-demo\artifacts\<preview-id>\` folder and copies
+`loadtests\cli-demo\smoke.jmx` from that checkout before invoking Azure CLI.
+No generated file or path from the original Copilot session is required. The
+script stops with an explicit message if it is not run from a checkout containing
+the test source.
+
 The opt-in files are outside `loadtests/config/` so existing `azd up` provisioning
 does not change. These repository templates are never rewritten by the UI:
 
 - [`loadtests/cli-demo/smoke.yaml`](../loadtests/cli-demo/smoke.yaml)
 - [`loadtests/cli-demo/smoke.jmx`](../loadtests/cli-demo/smoke.jmx)
+
+Both source files are versioned on `main`; generated per-preview copies are
+temporary local inputs, not missing files that need to be committed. A fresh
+clone of `main` includes the source templates and the runnable app.
 
 The test uses **one engine, five users, ten-second ramp-up, 60-second scheduled
 duration, one-second per-user pacing**, and one GET request. A 200 response is

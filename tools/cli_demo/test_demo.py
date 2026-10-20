@@ -4,6 +4,7 @@ import csv
 import http.client
 import io
 import json
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -15,7 +16,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.cli_demo.commands import (
-    ACTIONS, ROOT, Config, build_commands, csv_export, metric_rows, redact, run_verdict, shell_command, tsv_export,
+    ACTIONS, ROOT, Config, build_commands, csv_export, metric_rows, redact, run_verdict, script_for,
+    shell_command, tsv_export,
 )
 from tools.cli_demo.server import App, CliRunner, DemoServer, azure_launcher
 
@@ -144,6 +146,20 @@ class CommandTests(unittest.TestCase):
         self.assertIn("DEMO_PORT=443", args)
         self.assertIn("DEMO_PATH=/health?a=1&b=2", args)
         self.assertNotIn("--engine-instances", args)
+
+    def test_create_command_uses_checkout_relative_default_inputs(self):
+        directory = ROOT / ".loadtest-demo" / "artifacts" / ("a" * 32)
+        args = build_commands("create-test", CONFIG, directory)[0].args
+        config_path = Path(args[args.index("--load-test-config-file") + 1])
+        self.assertEqual(config_path, Path(".loadtest-demo") / "artifacts" / ("a" * 32) / "smoke.yaml")
+        self.assertFalse(config_path.is_absolute())
+        self.assertNotIn(str(ROOT), shell_command(args))
+
+    def test_create_command_preserves_explicit_external_data_directory(self):
+        with tempfile.TemporaryDirectory() as external:
+            directory = Path(external) / "artifacts" / ("a" * 32)
+            args = build_commands("create-test", CONFIG, directory)[0].args
+            self.assertEqual(Path(args[args.index("--load-test-config-file") + 1]), directory / "smoke.yaml")
         self.assertNotIn("--test-plan", args)
 
     def test_target_rejects_credentials_and_localhost(self):
@@ -375,6 +391,75 @@ class ExportTests(unittest.TestCase):
         self.assertEqual(run_verdict(run)["label"], "NO VERDICT")
 
 
+class PortableScriptTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.checkout = Path(self.temp.name) / "customer-checkout"
+        sources = self.checkout / "loadtests" / "cli-demo"
+        sources.mkdir(parents=True)
+        for name in ("smoke.yaml", "smoke.jmx"):
+            shutil.copyfile(ROOT / "loadtests" / "cli-demo" / name, sources / name)
+        self.original_directory = Path(self.temp.name) / "copilot-session" / "artifacts" / ("a" * 32)
+        self.config = replace(CONFIG, testId="portable-customer-test")
+        self.commands = build_commands("create-test", self.config, self.original_directory)
+        content = (sources / "smoke.yaml").read_text(encoding="utf-8").replace(
+            "testId: cli-demo-smoke", 'testId: "portable-customer-test"')
+        self.test_config = {"path": str(self.original_directory / "smoke.yaml"), "content": content}
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_exports_prepare_matching_yaml_and_jmx_without_session_paths(self):
+        for shell in ("powershell", "bash"):
+            with self.subTest(shell=shell):
+                script = script_for(self.commands, shell, self.test_config)
+                self.assertNotIn(str(self.original_directory), script)
+                self.assertNotIn(str(ROOT), script)
+                self.assertIn('testId: "portable-customer-test"', script)
+                self.assertIn("--test-id portable-customer-test", script)
+                self.assertIn("Run this script from the repository root", script)
+                self.assertIn("smoke.jmx", script)
+
+    @unittest.skipUnless(shutil.which("pwsh"), "PowerShell is required to execute its exported script.")
+    def test_powershell_create_export_runs_from_a_clean_checkout(self):
+        script = script_for(self.commands, "powershell", self.test_config)
+        path = self.checkout / "create.ps1"
+        path.write_text(script, encoding="utf-8", newline="")
+        wrapper = (
+            "Set-Location -LiteralPath '" + str(self.checkout).replace("'", "''") + "'; "
+            "function az { $global:LASTEXITCODE = 0; "
+            "[System.IO.File]::WriteAllText((Join-Path $PWD.Path 'argv.json'), "
+            "(ConvertTo-Json -InputObject @($args) -Compress)) }; "
+            "& '.\\create.ps1'"
+        )
+        result = subprocess.run([shutil.which("pwsh"), "-NoProfile", "-NonInteractive", "-Command", wrapper],
+                                cwd=self.checkout.parent, capture_output=True, text=True, timeout=30, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        args = json.loads((self.checkout / "argv.json").read_text(encoding="utf-8"))
+        config_file = Path(args[args.index("--load-test-config-file") + 1])
+        self.assertFalse(config_file.is_absolute())
+        generated = self.checkout / config_file
+        self.assertEqual(generated.read_text(encoding="utf-8"), self.test_config["content"])
+        self.assertEqual(generated.with_suffix(".jmx").read_bytes(),
+                         (ROOT / "loadtests" / "cli-demo" / "smoke.jmx").read_bytes())
+        self.assertFalse(self.original_directory.exists())
+
+    @unittest.skipUnless(shutil.which("pwsh"), "PowerShell is required to execute its exported script.")
+    def test_create_export_refuses_to_run_outside_a_checkout(self):
+        wrong_directory = Path(self.temp.name) / "not-a-checkout"
+        wrong_directory.mkdir()
+        path = wrong_directory / "create.ps1"
+        path.write_text(script_for(self.commands, "powershell", self.test_config), encoding="utf-8", newline="")
+        result = subprocess.run(
+            [shutil.which("pwsh"), "-NoProfile", "-NonInteractive", "-Command",
+             "function az { throw 'Azure CLI must not run here.' }; & '.\\create.ps1'"],
+            cwd=wrong_directory, capture_output=True, text=True, timeout=30, check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Run this script from the repository root", result.stderr)
+        self.assertFalse((wrong_directory / ".loadtest-demo").exists())
+
+
 class JobTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -426,6 +511,27 @@ class JobTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "exactly one.*testId"):
                         self.app.preview("create-test", asdict(CONFIG))
         self.assertEqual(self.app.jobs, {})
+
+    def test_default_create_preview_writes_relative_inputs_in_the_checkout(self):
+        with tempfile.TemporaryDirectory() as root:
+            checkout = Path(root).resolve()
+            sources = checkout / "loadtests" / "cli-demo"
+            sources.mkdir(parents=True)
+            for name in ("smoke.yaml", "smoke.jmx"):
+                shutil.copyfile(ROOT / "loadtests" / "cli-demo" / name, sources / name)
+            app = App(checkout / ".loadtest-demo", fake_runner)
+            try:
+                with patch("tools.cli_demo.commands.ROOT", checkout), patch("tools.cli_demo.server.ROOT", checkout):
+                    preview = app.preview("create-test", asdict(CONFIG))
+                args = preview["commands"][0]["argv"]
+                config_path = Path(args[args.index("--load-test-config-file") + 1])
+                self.assertFalse(config_path.is_absolute())
+                self.assertEqual(preview["testConfig"]["path"], str(config_path))
+                self.assertEqual((checkout / config_path).read_text(encoding="utf-8"),
+                                 preview["testConfig"]["content"])
+                self.assertTrue((checkout / config_path.with_suffix(".jmx")).is_file())
+            finally:
+                app.close()
 
     def test_all_client_metric_job_persists_raw_empty_series_and_labeled_exports(self):
         preview = self.app.preview("all-client-metrics", asdict(CONFIG))
@@ -697,7 +803,10 @@ class HttpTests(unittest.TestCase):
             with self.subTest(shell=shell):
                 status, _, script = self.request(f"/api/plans/{preview['id']}/script?shell={shell}")
                 self.assertEqual(status, 200)
-                self.assertIn(preview["commands"][0][shell].encode("utf-8"), script)
+                self.assertIn(f"--test-id {test_id}".encode("utf-8"), script)
+                self.assertIn(preview["testConfig"]["content"].strip().encode("utf-8"), script)
+                self.assertNotIn(preview["artifactDirectory"].encode("utf-8"), script)
+                self.assertIn(b"smoke.jmx", script)
 
     def test_create_preview_reports_unreadable_yaml(self):
         with patch("tools.cli_demo.server.Path.read_text", side_effect=FileNotFoundError("smoke.yaml")):
