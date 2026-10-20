@@ -292,6 +292,31 @@ GET,/two,10,0,90
         self.assertEqual(report["requestFiles"], [])
         self.assertEqual({item["metric"] for item in report["metricFiles"]}, {"ResponseTime", "VirtualUsers"})
 
+    def test_metric_tsv_preserves_zero_without_request_samples(self):
+        self.write("metrics.tsv",
+                   "timestamp\tnamespace\tmetric\tunit\tdimensions\taggregation\tvalue\n"
+                   "2026-10-19T10:00:00Z\tLoadTestRunMetrics\tErrors\tCount\t\tvalue\t0\n")
+        report = self.report()
+        self.assertTrue(report["complete"], report["problems"])
+        self.assertEqual(report["requestFiles"], [])
+        self.assertEqual(report["metricFiles"][0]["metric"], "Errors")
+        self.assertEqual(report["metricFiles"][0]["minObservedValue"], 0)
+
+    def test_metric_tsv_inside_zip_is_supported(self):
+        self.write("evidence.zip", archive_bytes({
+            "metrics/client.tsv": "timestamp\tmetric\tvalue\n2026-10-19T10:00:00Z\tResponseTime\t12\n",
+        }))
+        report = self.report()
+        self.assertTrue(report["complete"], report["problems"])
+        self.assertIn("!metrics/client.tsv", report["metricFiles"][0]["source"])
+        self.assertEqual(report["metricFiles"][0]["datapoints"], 1)
+
+    def test_invalid_metric_tsv_is_explicitly_partial(self):
+        self.write("metrics.tsv", "timestamp\tmetric\tvalue\n2026-10-19T10:00:00Z\tErrors\tunknown\n")
+        report = self.report()
+        self.assertFalse(report["complete"])
+        self.assertTrue(any("nonnumeric" in item["message"] for item in report["problems"]))
+
     def test_utf16_metadata_from_windows_powershell_is_readable(self):
         self.write("run.json", '{"testRunId":"one","status":"DONE"}'.encode("utf-16"))
         self.assertEqual(self.report()["runs"][0]["status"], "DONE")

@@ -490,10 +490,10 @@ def metric_rows(payload: Any, metric: str = "", namespace: str = "",
     return rows
 
 
-def csv_export(payload: Any, metric: str = "", namespace: str = "", definitions: Any = None) -> str:
+def _delimited_export(payload: Any, metric: str, namespace: str, definitions: Any, delimiter: str) -> str:
     output = io.StringIO(newline="")
     columns = ["timestamp", "namespace", "metric", "unit", "dimensions", "aggregation", "value"]
-    writer = csv.DictWriter(output, fieldnames=columns)
+    writer = csv.DictWriter(output, fieldnames=columns, delimiter=delimiter)
     writer.writeheader()
     for row in metric_rows(payload, metric, namespace, definitions):
         # Downloads can be opened in Excel; do not allow a metric/dimension to become a formula.
@@ -501,6 +501,14 @@ def csv_export(payload: Any, metric: str = "", namespace: str = "", definitions:
                          and value.startswith(("=", "+", "-", "@", "\t", "\r")) else value
                          for key, value in row.items()})
     return output.getvalue()
+
+
+def csv_export(payload: Any, metric: str = "", namespace: str = "", definitions: Any = None) -> str:
+    return _delimited_export(payload, metric, namespace, definitions, ",")
+
+
+def tsv_export(payload: Any, metric: str = "", namespace: str = "", definitions: Any = None) -> str:
+    return _delimited_export(payload, metric, namespace, definitions, "\t")
 
 
 def public_actions() -> list[dict[str, str]]:

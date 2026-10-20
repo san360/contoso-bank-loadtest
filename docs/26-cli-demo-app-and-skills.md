@@ -270,14 +270,27 @@ bucket value and its unit, with expandable datapoints/dimensions. Values use
 CLI/service-default aggregations and one-minute buckets; a latest bucket value is
 not a whole-run total.
 
-The overview has direct **JSON/CSV download** links. JSON preserves named empty
-series; CSV contains all returned datapoints with their metric names and units.
+The overview has direct **JSON/CSV/TSV download** links. JSON preserves named empty
+series; CSV and TSV contain all returned datapoints with their metric names and units.
 Changing the selected test/run clears the previous overview, and an in-flight
 response cannot overwrite results for a newly selected scope.
 
 **Get one client metric** still fetches a named metric such as `ResponseTime`,
 while **Get engine health** remains separate. Both keep the existing single-series
-chart/table and JSON/CSV exports.
+chart/table and JSON/CSV/TSV exports.
+
+Expand **View flattened TSV** to list the tab-separated rows and use **Copy TSV**
+to paste them into a terminal, spreadsheet, or another tool. TSV files have a
+header and the same columns as CSV: `timestamp`, `namespace`, `metric`, `unit`,
+`dimensions`, `aggregation`, and `value`. Names and units stay attached to every
+returned value; missing datapoints do not become zeros. CSV/TSV share escaping and
+spreadsheet-formula protection.
+
+The underlying Azure CLI commands still request JSON; the app flattens the
+response into TSV instead of applying `-o tsv` directly to nested metric objects.
+TSV is generated for all-client, single-client, engine and server metric queries,
+and is included in their evidence ZIPs. Old saved jobs are left untouched; refresh
+the metric query to generate TSV for a previous run.
 
 On **Server metrics**, use the start/end timestamps populated by **Inspect run**
 to fetch application values over the same window. Discovery shows valid metric
@@ -306,7 +319,7 @@ visible. The app does not execute or inline artifact HTML.
 
 - Run metadata with status, criteria and statistics.
 - Engine logs and raw result archives.
-- The configured named client metric and generator-health metric, as JSON/CSV.
+- The configured named client metric and generator-health metric, as JSON/CSV/TSV.
 - Server metric values **only if** a server resource/metric and valid run time
   window are configured; the preview explicitly says whether these are included.
 - A manifest with command provenance, errors and warnings.
@@ -325,10 +338,13 @@ Every execution has a separate persistent folder:
   run.json
   client-metrics.json
   client-metrics.csv
+  client-metrics.tsv
   engine-metrics.json
   engine-metrics.csv
+  engine-metrics.tsv
   server-metrics.json             # when requested/configured
   server-metrics.csv
+  server-metrics.tsv
   files/                         # original log/result archives
 ```
 
@@ -501,7 +517,7 @@ automatically upload artifacts to an agent service.
   datapoints and partial artifacts are visible.
   Non-idempotent operations are never automatically retried.
 - Downloads are attachment-only and confined to generated job folders. Metric
-  CSV exports neutralize formula prefixes. Archive contents are never executed.
+  CSV/TSV exports neutralize formula prefixes. Archive contents are never executed.
 - Never treat an engine log as server telemetry, an execution status as a
   performance verdict, or a time-series mean as a request percentile.
 

@@ -156,7 +156,7 @@ class Analyzer:
                 continue
             if not file.is_file():
                 continue
-            if file.suffix.lower() not in {".zip", ".gz", ".csv", ".jtl", ".log", ".out", ".txt", ".json"}:
+            if file.suffix.lower() not in {".zip", ".gz", ".csv", ".tsv", ".jtl", ".log", ".out", ".txt", ".json"}:
                 continue
             if file.stat().st_size > MAX_FILE:
                 self.problem(str(file), "File exceeds the 64 MiB per-file limit.")
@@ -216,7 +216,7 @@ class Analyzer:
                         if self.file_count >= MAX_FILES or self.total >= MAX_TOTAL:
                             self.problem(source, "Archive inspection limit reached.")
                             break
-                        if Path(name).suffix.lower() not in {".zip", ".gz", ".csv", ".jtl", ".log", ".out", ".txt", ".json"}:
+                        if Path(name).suffix.lower() not in {".zip", ".gz", ".csv", ".tsv", ".jtl", ".log", ".out", ".txt", ".json"}:
                             continue
                         with archive.open(member) as handle:
                             self.visit(f"{source}!{name}", handle.read(MAX_FILE + 1), depth + 1)
@@ -232,12 +232,12 @@ class Analyzer:
                 if suffix == ".json":
                     info["kind"] = "json"
                     self.json_file(source, json.loads(text))
-                elif suffix in {".csv", ".jtl"}:
+                elif suffix in {".csv", ".tsv", ".jtl"}:
                     info["kind"] = "request-or-metric-data"
                     if text.lstrip().startswith("<"):
                         self.xml_samples(source, text)
                     else:
-                        self.csv_file(source, text)
+                        self.csv_file(source, text, delimiter="\t" if suffix == ".tsv" else ",")
                 elif suffix in {".log", ".out", ".txt"}:
                     info["kind"] = "engine-log"
                     self.log_file(source, text)
@@ -245,10 +245,10 @@ class Analyzer:
                 zipfile.BadZipFile, ElementTree.ParseError, csv.Error, zlib.error) as exc:
             self.problem(source, f"Could not parse evidence: {exc}")
 
-    def csv_file(self, source: str, text: str) -> None:
-        reader = csv.DictReader(io.StringIO(text))
+    def csv_file(self, source: str, text: str, delimiter: str = ",") -> None:
+        reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
         if not reader.fieldnames:
-            self.problem(source, "Empty CSV: no header or samples.")
+            self.problem(source, "Empty delimited file: no header or samples.")
             return
         normalized = {re.sub(r"[\s_]", "", key).lower(): key for key in reader.fieldnames if key}
         if {"timestamp", "usercount"}.issubset(normalized):
@@ -274,7 +274,7 @@ class Analyzer:
             return
         elapsed_key = normalized.get("elapsed") or normalized.get("responsetime")
         if not elapsed_key:
-            self.problem(source, "Unsupported CSV columns: no raw elapsed time, Locust stats or metric schema.")
+            self.problem(source, "Unsupported delimited columns: no raw elapsed time, Locust stats or metric schema.")
             return
         total = Samples()
         labels: dict[str, Samples] = defaultdict(Samples)
@@ -439,7 +439,7 @@ class Analyzer:
                             try:
                                 values[name or "see export filename"].append(number(item))
                             except ValueError:
-                                self.problem(source, "Metric CSV contains a nonnumeric datapoint.")
+                                self.problem(source, "Metric export contains a nonnumeric datapoint.")
                 for key in ("value", "timeseries", "timeSeries", "data"):
                     if isinstance(node.get(key), (list, dict)):
                         visit(node[key], name)

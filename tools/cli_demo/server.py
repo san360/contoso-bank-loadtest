@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from .commands import (
     ACTION_BY_ID, ROOT, Command, Config, build_commands, csv_export, metric_rows,
-    public_actions, redact, run_verdict, script_for,
+    public_actions, redact, run_verdict, script_for, tsv_export,
 )
 
 LOG = logging.getLogger("cli_demo")
@@ -271,8 +271,10 @@ class App:
                     if command.metric or command.namespace:
                         definitions = client_definitions if command.namespace == "LoadTestRunMetrics" else None
                         entry["metricRows"] = metric_rows(data, command.metric, command.namespace, definitions)
-                        (plan.directory / Path(command.artifact).with_suffix(".csv")).write_text(
-                            csv_export(data, command.metric, command.namespace, definitions), encoding="utf-8")
+                        for suffix, exporter in ((".csv", csv_export), (".tsv", tsv_export)):
+                            (plan.directory / Path(command.artifact).with_suffix(suffix)).write_text(
+                                exporter(data, command.metric, command.namespace, definitions),
+                                encoding="utf-8", newline="")
                         if not entry["metricRows"]:
                             with self.lock:
                                 job["warnings"].append(
@@ -520,7 +522,9 @@ class Handler(BaseHTTPRequestHandler):
                 or not file.is_file()):
             raise FileNotFoundError("Artifact not found.")
         with file.open("rb") as handle:
-            self._headers(200, mimetypes.guess_type(file.name)[0] or "application/octet-stream",
+            content_type = ("text/tab-separated-values; charset=utf-8" if file.suffix.lower() == ".tsv"
+                            else mimetypes.guess_type(file.name)[0] or "application/octet-stream")
+            self._headers(200, content_type,
                           file.stat().st_size, re.sub(r"[^A-Za-z0-9._ -]", "_", file.name))
             shutil.copyfileobj(handle, self.wfile)
 

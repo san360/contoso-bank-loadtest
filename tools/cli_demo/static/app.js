@@ -255,7 +255,7 @@ function renderRun(run, verdict) {
   panel.hidden = false;
 }
 
-function renderMetrics(rows) {
+function renderMetrics(rows, job = null, artifact = "") {
   $("metric-panel").hidden = false;
   $("metric-heading").textContent = rows[0]?.metric || "Metric time series";
   $("metric-count").textContent = `${rows.length} returned datapoints`;
@@ -263,6 +263,7 @@ function renderMetrics(rows) {
     rows.slice(0, 200).map((row) => [row.timestamp, row.namespace, row.metric, row.aggregation, row.value, row.unit])));
   const svg = $("metric-chart");
   drawMetricChart(svg, rows);
+  renderTsvPreview("metric-tsv-preview", job, artifact);
 }
 
 function firstMetricSeries(rows) {
@@ -297,6 +298,56 @@ function drawMetricChart(svg, rows) {
   svg.append(path, marker);
 }
 
+function renderTsvPreview(containerId, job, artifact) {
+  const container = $(containerId);
+  container.replaceChildren();
+  const file = job?.files.find((item) => item.name === artifact.replace(/\.json$/, ".tsv"));
+  if (!file) return;
+  const details = document.createElement("details");
+  details.className = "tsv-preview";
+  const summary = document.createElement("summary");
+  summary.textContent = "View flattened TSV";
+  const toolbar = document.createElement("div");
+  toolbar.className = "file-list";
+  const copy = document.createElement("button");
+  copy.className = "secondary";
+  copy.textContent = "Copy TSV";
+  const output = document.createElement("pre");
+  output.className = "output";
+  output.tabIndex = 0;
+  output.textContent = "Expand to load the headered, tab-separated metric rows.";
+  let text;
+  let pending;
+  function loadTsv() {
+    if (text !== undefined) return Promise.resolve(text);
+    if (!pending) {
+      pending = (async () => {
+        output.textContent = "Loading TSV...";
+        const response = await fetch(file.url);
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.error || `Could not load TSV (${response.status}).`);
+        }
+        text = await response.text();
+        output.textContent = text;
+        return text;
+      })().catch((error) => {
+        output.textContent = `TSV preview unavailable: ${error.message}`;
+        throw error;
+      }).finally(() => { pending = null; });
+    }
+    return pending;
+  }
+  details.addEventListener("toggle", handle(async () => { if (details.open) await loadTsv(); }));
+  copy.addEventListener("click", handle(async () => {
+    await navigator.clipboard.writeText(await loadTsv());
+    notify("Flattened TSV copied.");
+  }));
+  toolbar.append(copy);
+  details.append(summary, toolbar, output);
+  container.append(details);
+}
+
 function prepareClientOverview(snapshot) {
   $("client-overview").hidden = false;
   $("client-metric-count").textContent = "LOADING";
@@ -304,6 +355,7 @@ function prepareClientOverview(snapshot) {
   $("client-metric-status").textContent = "Fetching run metadata, metric definitions and all client metric values...";
   $("client-metric-grid").replaceChildren();
   $("client-metric-downloads").replaceChildren();
+  $("client-metric-tsv-preview").replaceChildren();
 }
 
 function renderClientOverview(job, snapshot) {
@@ -375,22 +427,24 @@ function renderClientOverview(job, snapshot) {
       if (metricRows.length > 200) {
         const note = document.createElement("p");
         note.className = "hint";
-        note.textContent = "Showing the first 200 datapoints; the JSON/CSV downloads contain all returned datapoints.";
+        note.textContent = "Showing the first 200 datapoints; the JSON/CSV/TSV downloads contain all returned datapoints.";
         details.append(note);
       }
       card.append(details);
     }
     $("client-metric-grid").append(card);
   });
-  for (const name of ["all-client-metrics.json", "all-client-metrics.csv"]) {
+  for (const name of ["all-client-metrics.json", "all-client-metrics.csv", "all-client-metrics.tsv"]) {
     const file = job.files.find((item) => item.name === name);
     if (!file) continue;
     const link = document.createElement("a");
     link.className = "file-link";
     link.href = file.url;
-    link.textContent = name.endsWith(".json") ? "Download all metrics JSON" : "Download all datapoints CSV";
+    link.textContent = name.endsWith(".json") ? "Download all metrics JSON"
+      : `Download all datapoints ${name.endsWith(".tsv") ? "TSV" : "CSV"}`;
     $("client-metric-downloads").append(link);
   }
+  renderTsvPreview("client-metric-tsv-preview", job, "all-client-metrics.json");
 }
 
 function filesFor(job, target) {
@@ -460,7 +514,9 @@ async function executePlan(duringWatch = false) {
       if (job.action === "all-client-metrics") {
         renderClientOverview(job, JSON.parse(scope));
         if (!$("tab-metrics").hidden) $("client-overview").scrollIntoView({ behavior: "smooth", block: "start" });
-      } else job.commands.forEach((entry) => { if (entry.metricRows) renderMetrics(entry.metricRows); });
+      } else job.commands.forEach((entry) => {
+        if (entry.metricRows) renderMetrics(entry.metricRows, job, entry.artifact);
+      });
     } else notify("These results belong to the previous configuration; automatic field and metric updates were skipped.");
     if (job.error) notify(job.error, true);
     if (job.warnings.length) notify(job.warnings.join(" "));

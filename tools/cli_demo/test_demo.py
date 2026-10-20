@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.cli_demo.commands import (
-    ACTIONS, ROOT, Config, build_commands, csv_export, metric_rows, redact, run_verdict, shell_command,
+    ACTIONS, ROOT, Config, build_commands, csv_export, metric_rows, redact, run_verdict, shell_command, tsv_export,
 )
 from tools.cli_demo.server import App, CliRunner, DemoServer, azure_launcher
 
@@ -241,6 +241,56 @@ class CommandTests(unittest.TestCase):
 
 
 class ExportTests(unittest.TestCase):
+    def test_tsv_has_the_same_columns_values_and_units_as_csv(self):
+        kwargs = {"namespace": "LoadTestRunMetrics", "definitions": CLIENT_DEFINITIONS}
+        csv_rows = list(csv.DictReader(io.StringIO(csv_export(ALL_CLIENT_METRICS, **kwargs))))
+        tsv_reader = csv.DictReader(io.StringIO(tsv_export(ALL_CLIENT_METRICS, **kwargs)), delimiter="\t")
+        self.assertEqual(tsv_reader.fieldnames,
+                         ["timestamp", "namespace", "metric", "unit", "dimensions", "aggregation", "value"])
+        self.assertEqual(list(tsv_reader), csv_rows)
+        self.assertFalse(any(row["metric"] == "Errors" for row in csv_rows))
+
+    def test_tsv_preserves_zero_and_omits_missing_values(self):
+        data = {"Errors": [{"data": [{"timestamp": CONFIG.startTime, "value": 0},
+                                    {"timestamp": CONFIG.endTime, "value": None}]}]}
+        rows = list(csv.DictReader(io.StringIO(tsv_export(
+            data, namespace="LoadTestRunMetrics", definitions=CLIENT_DEFINITIONS)), delimiter="\t"))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["value"], "0")
+        self.assertEqual(rows[0]["unit"], "Count")
+
+    def test_tsv_quotes_embedded_tabs_newlines_and_quotes(self):
+        name = 'Request\t"quoted"\nnext line'
+        data = [{"dimensions": {"RequestName": 'health\t"quoted"\nnext'},
+                 "data": [{"timestamp": CONFIG.startTime, "value": 1}]}]
+        rows = list(csv.DictReader(io.StringIO(tsv_export(data, name)), delimiter="\t"))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["metric"], name)
+        self.assertEqual(json.loads(rows[0]["dimensions"])["RequestName"], 'health\t"quoted"\nnext')
+
+    def test_tsv_neutralizes_spreadsheet_formulas(self):
+        data = [{"data": [{"timestamp": CONFIG.startTime, "value": -2}]}]
+        for name in ("=HYPERLINK()", "+SUM(A1)", "-command", "@SUM(A1)", "\tleading", "\rleading"):
+            with self.subTest(name=name):
+                rows = list(csv.DictReader(io.StringIO(tsv_export(data, name)), delimiter="\t"))
+                self.assertEqual(rows[0]["metric"], "'" + name)
+                self.assertEqual(rows[0]["value"], "-2")
+
+    def test_empty_tsv_keeps_a_header_without_invented_data(self):
+        reader = csv.DictReader(io.StringIO(tsv_export({"Errors": [{"data": []}]},
+                                                      namespace="LoadTestRunMetrics")), delimiter="\t")
+        self.assertIn("metric", reader.fieldnames)
+        self.assertEqual(list(reader), [])
+
+    def test_tsv_preserves_server_aggregation_and_units(self):
+        data = {"value": [{"name": {"value": "CpuTime"}, "unit": "Seconds",
+                           "timeseries": [{"data": [{"timeStamp": CONFIG.startTime, "total": 0}]}]}]}
+        rows = list(csv.DictReader(io.StringIO(tsv_export(data)), delimiter="\t"))
+        self.assertEqual(rows[0]["metric"], "CpuTime")
+        self.assertEqual(rows[0]["unit"], "Seconds")
+        self.assertEqual(rows[0]["aggregation"], "total")
+        self.assertEqual(rows[0]["value"], "0")
+
     def test_all_client_metric_map_retains_names_and_units(self):
         rows = metric_rows(ALL_CLIENT_METRICS, namespace="LoadTestRunMetrics", definitions=CLIENT_DEFINITIONS)
         self.assertEqual({row["metric"] for row in rows}, {"VirtualUsers", "ResponseTime", "TotalRequests"})
@@ -388,7 +438,18 @@ class JobTests(unittest.TestCase):
         self.assertEqual({row["unit"] for row in entry["metricRows"]}, {"Count", "Milliseconds"})
         names = {file["name"] for file in job["files"]}
         self.assertTrue({"run.json", "client-definitions.json", "all-client-metrics.json",
-                         "all-client-metrics.csv"}.issubset(names))
+                         "all-client-metrics.csv", "all-client-metrics.tsv"}.issubset(names))
+
+    def test_tsv_file_bytes_do_not_gain_extra_windows_line_endings(self):
+        preview = self.app.preview("client-metrics", asdict(CONFIG))
+        self.app.start(preview["id"], False)
+        job = wait_job(self.app, preview["id"])
+        self.assertEqual(job["state"], "succeeded", job["error"])
+        data = job["commands"][0]["data"]
+        path = Path(job["artifactDirectory"]) / "client-metrics.tsv"
+        self.assertEqual(path.read_bytes(),
+                         tsv_export(data, CONFIG.clientMetric, "LoadTestRunMetrics").encode("utf-8"))
+        self.assertNotIn(b"\r\r\n", path.read_bytes())
 
     def test_all_client_metric_job_rejects_a_run_from_another_test(self):
         preview = self.app.preview("all-client-metrics", asdict(replace(CONFIG, testId="another-test")))
@@ -434,6 +495,13 @@ class JobTests(unittest.TestCase):
         self.assertTrue({"run.json", "client-metrics.csv", "engine-metrics.json",
                          "server-metrics.csv", "files/logs.zip", "files/results.zip",
                          "manifest.json"}.issubset(names))
+        for metric in ("client-metrics", "engine-metrics", "server-metrics"):
+            self.assertIn(metric + ".tsv", names)
+            directory = Path(job["artifactDirectory"])
+            csv_rows = list(csv.DictReader(io.StringIO((directory / (metric + ".csv")).read_text(encoding="utf-8"))))
+            tsv_rows = list(csv.DictReader(io.StringIO((directory / (metric + ".tsv")).read_text(encoding="utf-8")),
+                                          delimiter="\t"))
+            self.assertEqual(tsv_rows, csv_rows)
         self.assertNotIn("supersecret", (Path(job["artifactDirectory"]) / "run.json").read_text())
         self.assertNotIn("supersecret", job["commands"][0]["stdout"])
         with self.assertRaisesRegex(ValueError, "already executed"):
@@ -643,6 +711,20 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(status, 400, body)
         self.assertIn("Could not prepare the demo YAML", json.loads(body)["error"])
 
+    def test_tsv_download_is_a_headered_utf8_attachment(self):
+        status, _, body = self.request("/api/preview", {"action": "all-client-metrics", "config": asdict(CONFIG)})
+        self.assertEqual(status, 200)
+        preview = json.loads(body)
+        self.assertEqual(self.request("/api/jobs", {"planId": preview["id"]})[0], 202)
+        job = wait_job(self.app, preview["id"])
+        file = next(item for item in job["files"] if item["name"] == "all-client-metrics.tsv")
+        status, headers, body = self.request(file["url"])
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "text/tab-separated-values; charset=utf-8")
+        self.assertIn("attachment", headers["Content-Disposition"])
+        self.assertTrue(body.startswith(b"timestamp\tnamespace\tmetric\tunit\t"))
+        self.assertEqual(len(list(csv.DictReader(io.StringIO(body.decode("utf-8")), delimiter="\t"))), 3)
+
     def test_preview_execute_download_round_trip(self):
         status, _, body = self.request("/api/preview", {"action": "collect-evidence", "config": asdict(CONFIG)})
         self.assertEqual(status, 200, body)
@@ -653,6 +735,9 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         with zipfile.ZipFile(io.BytesIO(bundle)) as archive:
             self.assertIn("client-metrics.csv", archive.namelist())
+            self.assertIn("client-metrics.tsv", archive.namelist())
+            self.assertIn("engine-metrics.tsv", archive.namelist())
+            self.assertIn("server-metrics.tsv", archive.namelist())
             self.assertIn("files/logs.zip", archive.namelist())
         status, headers, script = self.request(f"/api/plans/{preview['id']}/script?shell=powershell")
         self.assertEqual(status, 200)
