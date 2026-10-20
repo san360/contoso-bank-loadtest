@@ -104,7 +104,7 @@ Detailed flow for `contoso-bank-secrets-kv`:
 3. **The test definition stores the URI.** `loadtests/config/secrets-demo.yaml` stores `API_KEY` with a Key Vault URI under `secrets:`. Microsoft Learn confirms that secret parameters use the secret name expected by the script and a Key Vault secret identifier as the value.
 4. **Azure Load Testing resolves at run time.** The load-test service uses the configured Key Vault reference identity. If no explicit `keyVaultReferenceIdentity` or `referenceIdentities` entry is supplied, this demo uses the load-test resource's system-assigned identity.
 5. **JMeter reads the secret once per thread.** The `Secret Variables` User Defined Variables element calls Azure Load Testing's custom `GetSecret` function, `${__GetSecret(API_KEY)}`, and stores the result in `udv_apiKey`. Microsoft Learn states this function works only when the JMeter script runs in Azure Load Testing, not when run locally, and documents the user-defined-variable placement as the supported pattern.
-6. **JMeter verifies the value arrived.** `SecretResolutionCheck` runs once per thread, before any HTTP traffic is judged, and fails when `udv_apiKey` is null, blank, or still an unresolved placeholder. It logs only the value length and a truncated SHA-256 fingerprint.
+6. **JMeter verifies the value arrived.** `SecretResolutionCheck` runs once per thread, before any HTTP traffic is judged, and fails when `udv_apiKey` is null, blank, or still an unresolved placeholder. By default it logs only the value length and a truncated SHA-256 fingerprint, at `WARN` level so Azure Load Testing retains the message. An explicit disposable-secret demonstration can opt into plaintext logging (§24.3.3).
 7. **JMeter sends the secret to the app.** The script sends `Authorization: Bearer ${udv_apiKey}` on the `/api/accounts/${accountId}/balance` and `/health` samplers. It is not in the URL, not in query parameters, and not in the request body.
 8. **The application ignores it today.** `GET /api/accounts/{account_id}/balance` returns data without requiring a key. Live read-only checks returned `200` for both no `Authorization` header and a deliberately wrong `Authorization` header.
 
@@ -161,7 +161,7 @@ The same rule applies to any other sampler-scoped location: request bodies, quer
 
 ### 24.3.2 How to tell whether the secret was actually fetched
 
-Ordered from cheapest to most conclusive. Never print the value itself.
+Ordered from cheapest to most conclusive. Normal runs never print the value itself. The isolated, disposable-secret presentation mode is described in §24.3.3.
 
 | # | Check | Where | A healthy result looks like | A broken result looks like |
 |---|---|---|---|---|
@@ -174,9 +174,45 @@ Ordered from cheapest to most conclusive. Never print the value itself.
 
 Checks 1-5 prove the value reached the engine. Only check 6 proves the value is **correct**, and it requires the application change in §24.6.1.
 
-The fingerprint in check 3 is a truncated SHA-256 of the secret. It is one-way, so it is safe to keep in run artefacts, and it is stable, so it is the practical way to answer "did this run use the same secret as the last one?" without ever revealing the secret.
+The fingerprint in check 3 is a truncated SHA-256 of the secret. It is stable, so it helps answer "did this run use the same secret as the last one?" without printing the value. It is not an authentication check or an exact-value guarantee, and hashes of guessable secrets can still disclose information.
 
 **Reading the length alone is already diagnostic.** A length of `0` means the parameter resolved to an empty string, which usually means a name mismatch between the YAML `secrets:` entry and the `__GetSecret` argument. A length matching `${__GetSecret(API_KEY)}` means the function never ran at all, which is the placement error in §24.3.1.
+
+---
+
+### 24.3.3 Opt-in plaintext logging for a disposable demo secret
+
+For an audience demonstration only, `DEMO_LOG_SECRET=true` prints the retrieved `API_KEY` value at `WARN` level. Use a dedicated throwaway value that is not a real credential. The committed `secrets-demo.yaml` defaults to `"false"`; an absent flag or any value other than `true` (case-insensitive) also leaves plaintext logging off.
+
+Deploy the existing JMX Key Vault test with the presentation override:
+
+```powershell
+az load test update `
+  --subscription 1da52b57-468a-4dc6-ba36-1255cc1f6e8e `
+  --load-test-resource alt-loadtest-27d2e5 --resource-group rg-loadtest `
+  --test-id contoso-bank-secrets-kv `
+  --load-test-config-file .\loadtests\config\secrets-demo.yaml `
+  --env DEMO_LOG_SECRET=true
+```
+
+This updates the definition only; starting a run remains a separate, billable presenter step. For another environment, substitute its subscription, resource names, target host and Key Vault URI.
+
+After a run, open **Test run -> Download -> Logs** and find:
+
+```text
+Key Vault secret API_KEY resolved. length=<n> sha256_prefix=<8 hex chars>
+DEMO ONLY: retrieved API_KEY=<disposable demo value>
+```
+
+The plaintext line is emitted only after successful resolution and only by the first JMeter thread on each engine. It is not copied into the `SecretResolutionCheck` response data, response message or sampler name. Missing or unresolved secrets still fail that sampler and its scoped failure criterion.
+
+Compare the displayed disposable value with the expected demo value to demonstrate correct retrieval. This does not prove application-side authentication: the current API still ignores the header.
+
+The existing Locust `on_test_start` hook supports the same flag and logs once per process at test start. To use it, configure `API_KEY` in that Locust test's `secrets` settings with the Key Vault URI, then set `DEMO_LOG_SECRET=true` in its environment settings. If enabled without a non-empty `API_KEY`, the hook logs an error, stops the runner and sets a non-zero process exit code. The normal peak-load Locust definition is unchanged and does not enable this mode.
+
+Azure Load Testing retains `WARN` and `ERROR` messages in normal worker logs, so these messages deliberately use warning-level logging rather than `INFO`. A warning does not itself fail a test.
+
+After presenting, reapply the same YAML without `--env DEMO_LOG_SECRET=true` to restore the default `"false"`. Turning it off does **not** remove plaintext from earlier run logs. Keep those artefacts private, do not publish them in CI/PR evidence, and discard or rotate the exposed demo value.
 
 ---
 
@@ -412,7 +448,7 @@ env:
 | Test validates but fails at run time | Test creation validates the shape of the Key Vault URI and test definition, but the actual secret value is fetched at run time. Network or RBAC failures surface later. | Run a cheap pre-flight after provisioning that checks the load-test identity, role assignment, vault network setting, and test definition. Do not assume create/update success proves run-time secret access. |
 | `contoso-bank-secrets-kv` fails while `contoso-bank-secrets-gh` runs | Key Vault data-plane access is blocked, but the GitHub Actions secret path bypasses Key Vault resolution during the run. | Use `contoso-bank-secrets-gh` only for the green demo path; fix the Key Vault network path before presenting it as the bank-grade pattern. |
 | App returns `200` without `Authorization` | Current `src/main.py` does not enforce an API key on any endpoint. | Add the FastAPI dependency in §24.6.1 to `GET /api/accounts/{account_id}/balance`, then add the negative test in §24.6.3. |
-| Secret visible in results/logs | The script logged headers, placed the secret in a URL/query/body, used a Debug Sampler, echoed pipeline inputs, or put sensitive values in sampler names. | Keep the secret in the `Authorization` header; never put it in query strings, request names, assertions, variables displayed by debug output, or pipeline logs; disable request-header logging in result artefacts; review JTL/log settings before sharing results. |
+| Secret visible in results/logs | `DEMO_LOG_SECRET=true` intentionally enabled disposable-secret presentation logging, or the script logged headers, placed the secret in a URL/query/body, used a Debug Sampler, echoed pipeline inputs, or put sensitive values in sampler names. | Disable the demo flag after presenting (§24.3.3). For normal runs, keep the secret in the `Authorization` header; never put it in query strings, request names, assertions, variables displayed by debug output, or pipeline logs; disable request-header logging in result artefacts; review JTL/log settings before sharing results. |
 | `Key Vault Secrets User` exists but secret access still fails | RBAC is correct but the vault data plane is unreachable to the caller. This is the current CLI data-plane pattern, but the named Azure Load Testing run still executed. | Treat RBAC and network as separate gates. Fix or document the network policy/private endpoint/trusted bypass path; do not keep adding duplicate role assignments. |
 
 ---
@@ -440,6 +476,7 @@ Use this short version with the customer:
 
 ## 24.11 References verified
 
+- [Diagnose failing load tests](https://learn.microsoft.com/azure/app-testing/load-testing/how-to-diagnose-failing-load-test#download-apache-jmeter-or-locust-worker-logs-for-your-load-test): verifies normal worker logs retain `WARN`/`ERROR` messages and the **Download -> Logs** location.
 - Microsoft Learn — [Use secrets and environment variables in Azure Load Testing](https://learn.microsoft.com/azure/app-testing/load-testing/how-to-parameterize-load-tests): verifies Key Vault secret URI parameters, CI/CD secret-store injection, `${__GetSecret(...)}` for JMeter, Locust secret environment variables, non-secret environment variables, and the FAQ that Key Vault-backed secret values are not stored by the service.
 - Microsoft Learn — [Load test secured endpoints with Azure Load Testing](https://learn.microsoft.com/azure/app-testing/load-testing/how-to-test-secured-endpoints): verifies shared-secret authentication flow, GitHub Actions `secrets` input, use of `Authorization` headers, client certificates, and managed-identity authentication scenarios.
 - Microsoft Learn — [Configure a load test in YAML](https://learn.microsoft.com/azure/app-testing/load-testing/reference-test-config-yaml): verifies `secrets`, `env`, `certificates`, `keyVaultReferenceIdentity`, and `referenceIdentities` syntax, including `kind: KeyVault` and `type: UserAssigned` or `SystemAssigned`.

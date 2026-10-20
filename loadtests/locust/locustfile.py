@@ -25,6 +25,7 @@ Note: `locust` does not install on Windows ARM64 without MSVC build tools
 Azure Load Testing engines, which are Azure Linux x86_64.
 """
 
+import logging
 import os
 import random
 
@@ -40,6 +41,14 @@ PAGE_SIZE = int(os.getenv("PAGE_SIZE", "20"))
 @events.test_start.add_listener
 def on_test_start(environment, **_kwargs):
     print(f"Contoso Bank load test starting against {environment.host}")
+    if os.getenv("DEMO_LOG_SECRET", "").lower() == "true":
+        api_key = os.getenv("API_KEY")
+        if api_key is None or not api_key.strip():
+            logging.error("DEMO_LOG_SECRET=true requires a non-empty API_KEY secret.")
+            environment.process_exit_code = 1
+            environment.runner.quit()
+            return
+        logging.warning("DEMO ONLY: retrieved API_KEY=%s", api_key)
 
 
 class RetailBankingCustomer(HttpUser):
