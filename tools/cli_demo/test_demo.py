@@ -135,9 +135,17 @@ class CommandTests(unittest.TestCase):
 
     def test_small_test_is_fixed_and_target_is_one_argument(self):
         args = build_commands("create-test", CONFIG, Path("output"))[0].args
+        self.assertEqual(args[:3], ("load", "test", "create"))
+        config_file = Path(args[args.index("--load-test-config-file") + 1])
+        self.assertEqual(config_file.name, "smoke.yaml")
+        self.assertTrue(config_file.is_file())
+        self.assertEqual(args[args.index("--test-id") + 1], CONFIG.testId)
+        self.assertIn("DEMO_HOST=example.invalid", args)
+        self.assertIn("DEMO_PROTOCOL=https", args)
+        self.assertIn("DEMO_PORT=443", args)
         self.assertIn("DEMO_PATH=/health?a=1&b=2", args)
-        self.assertTrue(any(value.endswith("smoke.yaml") for value in args))
         self.assertNotIn("--engine-instances", args)
+        self.assertNotIn("--test-plan", args)
 
     def test_target_rejects_credentials_and_localhost(self):
         for target in ("file:///tmp/test", "https://user:pass@example.invalid/",
@@ -329,6 +337,7 @@ class JobTests(unittest.TestCase):
 
     def test_preview_is_not_execution_and_requires_confirmation(self):
         preview = self.app.preview("run-test", asdict(CONFIG))
+        self.assertIsNone(preview["testConfig"])
         self.assertFalse(Path(preview["artifactDirectory"]).exists())
         with self.assertRaisesRegex(ValueError, "Confirm"):
             self.app.start(preview["id"], False)
@@ -532,6 +541,7 @@ class HttpTests(unittest.TestCase):
         status, headers, data = self.request("/", authenticated=False)
         self.assertEqual(status, 200)
         self.assertIn(b"CLI lab", data)
+        self.assertIn(b'href="https://learn.microsoft.com/en-us/azure/app-testing/load-testing/reference-test-config-yaml"', data)
         self.assertIn("SameSite=Strict", headers["Set-Cookie"])
         self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
 
@@ -557,6 +567,31 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.request("/api/bootstrap", headers={"Cookie": 'cli_demo="\\351"'})[0], 403)
         self.assertEqual(self.request("/api/preview", {"action": "account"},
                                       headers={"X-Demo-Token": "\xe9"})[0], 403)
+
+    def test_create_preview_shows_yaml_used_by_both_step_scripts(self):
+        with patch.object(self.app, "runner") as runner:
+            status, _, body = self.request("/api/preview", {"action": "create-test", "config": asdict(CONFIG)})
+        self.assertEqual(status, 200, body)
+        runner.assert_not_called()
+        preview = json.loads(body)
+        args = preview["commands"][0]["argv"]
+        config_file = Path(args[args.index("--load-test-config-file") + 1])
+        self.assertEqual(preview["testConfig"], {
+            "path": str(config_file), "content": config_file.read_text(encoding="utf-8"),
+        })
+        self.assertIn("testPlan: smoke.jmx", preview["testConfig"]["content"])
+        self.assertFalse(Path(preview["artifactDirectory"]).exists())
+        for shell in ("powershell", "bash"):
+            with self.subTest(shell=shell):
+                status, _, script = self.request(f"/api/plans/{preview['id']}/script?shell={shell}")
+                self.assertEqual(status, 200)
+                self.assertIn(preview["commands"][0][shell].encode("utf-8"), script)
+
+    def test_create_preview_reports_unreadable_yaml(self):
+        with patch("tools.cli_demo.server.Path.read_text", side_effect=FileNotFoundError("smoke.yaml")):
+            status, _, body = self.request("/api/preview", {"action": "create-test", "config": asdict(CONFIG)})
+        self.assertEqual(status, 400, body)
+        self.assertIn("Could not read the demo YAML", json.loads(body)["error"])
 
     def test_preview_execute_download_round_trip(self):
         status, _, body = self.request("/api/preview", {"action": "collect-evidence", "config": asdict(CONFIG)})

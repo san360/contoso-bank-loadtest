@@ -161,7 +161,11 @@ confirmed **Select CLI subscription** step.
 
 Use a distinct test ID such as `cli-demo-smoke`. Set an authorized target URL, for
 example the deployed bank's `/health` endpoint. Preview **Create the small demo
-test**, explain the YAML/JMX arguments, confirm the target, then execute.
+test** to show the actual **Azure Load Testing YAML** above the **CLI shell**
+preview. Explain the YAML first, then the `az load test create
+--load-test-config-file ...` command that reads it. **Copy YAML** copies the
+source file; the CLI preview, **Copy** and **Download step script** use the same
+creation command in PowerShell or Bash. Confirm the target, then execute.
 
 The opt-in files are outside `loadtests/config/` so existing `azd up` provisioning
 does not change:
@@ -173,7 +177,25 @@ The test uses **one engine, five users, ten-second ramp-up, 60-second scheduled
 duration, one-second per-user pacing**, and one GET request. A 200 response is
 asserted; error percentage and average response time have fail criteria.
 `example.invalid` in the YAML is an intentionally unusable placeholder; the UI
-supplies the actual host, scheme, port and path with `--env`.
+supplies the actual host, scheme, port and path with `--env`. The CLI's
+`--test-id` supplies the selected test ID. These CLI arguments override the YAML
+values without rewriting the source file. Users, ramp-up, duration and pacing
+are defined in the referenced JMX, not by `engineInstances` alone.
+
+The YAML uses the [official Azure Load Testing configuration format](https://learn.microsoft.com/en-us/azure/app-testing/load-testing/reference-test-config-yaml),
+not a local schema. The same creation step can be run directly from the
+repository root in PowerShell (replace the placeholders and select the matching
+CLI subscription first):
+
+```powershell
+az load test create `
+  --subscription "<subscription-guid>" `
+  --resource-group "<resource-group>" `
+  --load-test-resource "/subscriptions/<subscription-guid>/resourceGroups/<resource-group>/providers/Microsoft.LoadTestService/loadTests/<load-testing-resource>" `
+  --test-id "cli-demo-smoke" `
+  --load-test-config-file ".\loadtests\cli-demo\smoke.yaml" `
+  --env "DEMO_HOST=<authorized-hostname>" DEMO_PROTOCOL=https DEMO_PORT=443 DEMO_PATH=/health
+```
 
 Creating a definition does not start traffic. Creating with an existing ID can
 update it, so use a dedicated ID. The YAML is intentionally fixed-size; the UI is

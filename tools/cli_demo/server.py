@@ -103,6 +103,7 @@ class Plan:
     config: Config
     commands: list[Command]
     directory: Path
+    test_config: dict[str, str] | None = None
     created: float = field(default_factory=time.monotonic)
     started: bool = False
 
@@ -117,6 +118,7 @@ class Plan:
         return {"id": self.id, "action": self.action, "label": action.label,
                 "description": action.description, "confirmation": action.confirmation,
                 "commands": [command.public() for command in self.commands],
+                "testConfig": self.test_config,
                 "artifactDirectory": str(self.directory), "note": note}
 
 
@@ -137,7 +139,16 @@ class App:
         id_ = uuid.uuid4().hex
         directory = self.artifacts / id_
         commands = build_commands(action, config, directory)
-        plan = Plan(id_, action, config, commands, directory)
+        test_config = None
+        if action == "create-test":
+            args = commands[0].args
+            config_file = Path(args[args.index("--load-test-config-file") + 1])
+            try:
+                content = config_file.read_text(encoding="utf-8")
+            except OSError as exc:
+                raise ValueError(f"Could not read the demo YAML configuration ({config_file}): {exc}") from exc
+            test_config = {"path": str(config_file), "content": content}
+        plan = Plan(id_, action, config, commands, directory, test_config=test_config)
         with self.lock:
             expired = [key for key, item in self.plans.items()
                        if time.monotonic() - item.created > PLAN_LIFETIME]

@@ -45,7 +45,7 @@ ACTIONS = (
     Action("list-tests", "List test definitions", "lifecycle",
            "A definition is a reusable script and configuration, not an execution."),
     Action("create-test", "Create the small demo test", "lifecycle",
-           "Uploads the included JMX and YAML: one engine, five users, 60 seconds, GET only.",
+           "Creates the test from smoke.yaml via --load-test-config-file and uploads its JMX: one engine, five users, 60 seconds, GET only.",
            "This creates or updates the selected test ID. I have permission to test the target."),
     Action("show-test", "Inspect test definition", "lifecycle",
            "Checks the uploaded configuration before spending virtual user hours."),
