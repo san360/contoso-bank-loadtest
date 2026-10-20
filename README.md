@@ -47,7 +47,7 @@ pwsh -File tools/run_loadtest.ps1 -List
 # Start the cheap gate test, wait for it, print the verdict and the statistics
 pwsh -File tools/run_loadtest.ps1 -TestId contoso-bank-pr-gate -RunId demo-run-before
 
-# Or run every deployed definition, cheapest first, with a summary table at the end
+# Or run batch-eligible definitions, cheapest first (opt-in SQL metrics demos excluded)
 pwsh -File tools/run_loadtest.ps1 -All
 ```
 
@@ -105,6 +105,174 @@ localhost-only and separate from the deployed API.
 See [doc 26](./docs/26-cli-demo-app-and-skills.md) for startup/RBAC, a presenter
 flow, what **app components** mean, the distinction between client and server
 metric commands, artifact downloads and both agent skills.
+
+---
+
+## Optional: real Azure SQL database metrics
+
+This **separate, opt-in demo** creates a new **Basic Azure SQL database (5 DTU,
+2 GB)** and a new JMeter test in an **existing** Load Testing resource. It does not
+change the banking API's simulated database, existing tests, `azd up`, CI test
+selection, or the normal run-all catalog. Nothing is provisioned or run unless
+you invoke the commands below.
+
+The two existing batch runners exclude **only** `sql-metrics-*` IDs from
+`-All`/`--all`; their existing definitions, explicit named execution and CI
+selection are unchanged. Keeping assets outside `loadtests/config/` alone is not
+enough because those batch runners otherwise discover every live ALT definition.
+
+The new test performs real, committed SQL updates and a bounded 512-row aggregate:
+**one engine, two users, 120 seconds, one-second pacing, at most 240 transactions**.
+It attaches the **database** (not just its logical server) to the ALT dashboard
+with CPU, DTU, data IO, log IO, workers, sessions, session count and successful
+connection metrics. Warm caches may legitimately yield zero data IO; this is a
+metrics demonstration, not a promise to saturate the database.
+
+Requires Python 3.11+, Azure CLI and Terraform 1.9+. No Python packages, local
+Java runtime, SQL client or ODBC installation are needed. The helper downloads the
+Microsoft JDBC **13.6.1.jre11** driver from Maven Central and verifies a pinned
+SHA-256; it uploads the JAR and Groovy scripts only to this new test.
+On Windows ARM64, use the x64 Terraform binary under emulation: AzureRM 5.10
+does not publish a Windows ARM64 provider.
+
+Select an authorized existing ALT ARM resource ID and its subscription/directory
+explicitly. The helper discovers that resource's region and identity, checks Basic
+availability and registered providers, and never changes shared CLI defaults.
+The operator needs resource creation/deletion in the new group, permission to
+assign **Monitoring Reader on the new database only**, **Load Test Contributor**
+on the existing ALT resource, and subnet join/network permissions in the new VNet.
+Review inherited Azure Policies first; the helper does not bypass them or register
+providers automatically.
+
+```powershell
+# Run from the repository root. Replace these with your authorized environment.
+$State = ".loadtest-demo\sql-metrics\my-sql-demo"
+$Subscription = "<subscription-guid>"
+$Tenant = "<tenant-guid>"
+$Alt = "/subscriptions/$Subscription/resourceGroups/<existing-rg>/providers/Microsoft.LoadTestService/loadTests/<existing-alt>"
+
+# Read-only Azure preflight; writes only local context, tfvars and current SQL cost.
+python -m tools.sql_metrics_demo prepare --state-dir $State --name my-sql-demo `
+  --subscription $Subscription --tenant $Tenant --load-test-resource-id $Alt
+
+# Separate Terraform state; refuses to adopt an existing group or change old resources.
+python -m tools.sql_metrics_demo provision --state-dir $State --accept-cost
+
+# Upload this new definition only. SQL initialization happens inside its one engine.
+python -m tools.sql_metrics_demo setup --state-dir $State
+
+# Exactly one paid run per instance. Repeating this command refuses another start.
+python -m tools.sql_metrics_demo run --state-dir $State --accept-cost
+
+# Finish/re-read evidence after an interrupted collection, WITHOUT starting another run.
+python -m tools.sql_metrics_demo inspect --state-dir $State
+
+# Deletes only this generated test and Terraform-owned demo resources. Keeps local evidence.
+python -m tools.sql_metrics_demo cleanup --state-dir $State --confirm-name my-sql-demo
+```
+
+For a diagnosed, **settled FAILED** run only, an operator can explicitly authorize
+**one additional bounded validation run** with
+`run --state-dir $State --retry-failed-run "<exact-failed-run-id>" --accept-cost`.
+The helper first preserves its evidence under `attempts\<failed-run-id>\`, then
+reserves a single retry. There are no automatic retries, retries of ambiguous
+starts, or further retries; each additional start spends the same estimated
+$0.25 plus temporary networking. `inspect` never starts load.
+
+`--terraform` accepts an absolute executable path. Keep the state folder:
+it is the inventory needed for safe cleanup. Context, state and evidence live under
+the already-ignored `.loadtest-demo\`; do not commit them. A concurrent operation
+is refused using `operation.lock`; after a crashed process, remove that **one**
+lock file only after checking that its recorded PID is no longer running.
+
+**Authentication/networking:** SQL is Entra-only. The bootstrap operator becomes
+administrator of the **new logical server only**. The existing ALT system identity
+gets a contained database user with only `CONNECT` and `EXECUTE` on one stored
+procedure; it gets no table, DDL, server-admin or application permissions.
+Engine and Metrics reference identities are explicitly configured separately.
+The helper reads only that known managed identity's public client ID from Graph:
+**SQL's contained-user SID uses the client/application ID; Azure RBAC uses the
+principal/object ID**. It never assigns directory-reading roles to SQL or ALT.
+A short-lived Entra SQL token for the operator goes directly into the **new run's
+protected secret input** to seed and verify from inside its one engine. It is
+never put in the test definition, command arguments, environment variables,
+source, local JSON/archives or logs. The workload itself authenticates using
+IMDS and the restricted database user, not the operator token. Bootstrap variables
+are cleared after use; after the run the helper requests removal of its protected
+secret and reports whether the service accepted removal. If terminal-run secret
+editing is unsupported, the token expires at the timestamp in `run-manifest.json`.
+
+SQL public access is **disabled**. A dedicated private endpoint subnet, one
+Private Link endpoint, an isolated private DNS zone and a link to **only the new
+VNet** provide connectivity. No workstation firewall rule or VPN is needed, and
+inherited public-access restrictions are respected. There is **no** "allow all
+Azure services" rule, shared VNet peering, shared DNS-zone edit, NAT gateway or
+new web-service host. Cleanup owns the private endpoint and DNS resources too.
+
+**Evidence:** open the generated test in the existing ALT resource, select its
+run, and compare **SQLTransaction** client results with server-side SQL charts.
+`run.json` contains the settled client verdict/statistics; `run-components.json`
+and `run-server-metrics-config.json` show configuration, **not measured values**.
+`sql-metrics.json`/`.csv` contain Azure Monitor values, and
+`verified-evidence.json` is written only after all eight metrics have numeric
+samples in **complete one-minute buckets entirely inside the run**, positive
+SQL utilization/sessions, and a matching SQL run-token/committed-work count/balance
+delta. Each accepted bucket must also overlap at least **30 seconds of actual
+successful SQLTransaction sample timestamps**; provisioning/idle-only buckets do
+not qualify. The database proof is one deliberately non-secret structured `SQLVerify`
+response message in the raw request-result CSV, downloaded in memory with strict
+archive bounds; raw archives/signed artifact
+URLs/bootstrap secret fields are not saved. Artifact and telemetry polling are each
+bounded to five minutes and never rerun load.
+Missing/idle metrics, failed assertions, missing criteria, wrong resources and an
+unsettled verdict fail closed. An interrupted start is persisted before the API
+request; use `inspect`, not a retry/new run. No live verification is implied merely
+by creating an app component.
+
+**Costs:** retail checked **20 October 2026, Sweden Central, USD**:
+Basic is **$0.161/day**, about **$4.90 per 730-hour month** or **$0.00671/hour
+equivalent** (5 DTU and 2 GB included, LRS backups, no paid monitoring export).
+The required private endpoint adds approximately **$0.01/hour = $7.30/month**;
+the isolated private DNS zone adds approximately **$0.50/month**, plus tiny data
+and DNS-query charges. The infrastructure subtotal is **$0.417/day, or $12.70 per
+730-hour month**, not $4.90 for the whole demo.
+
+**Inherited security matters:** the validated subscription already has Standard
+Microsoft Defender for SQL, and the new server inherited **Enabled** protection.
+Its current Standard Node retail meter is **$15/server/month**. With that
+protection, the **total ongoing estimate is $0.911/day, or $27.70 per 730-hour
+month**. The helper reads the selected subscription's security pricing plan and
+includes this charge before provisioning; it never disables protection or changes
+subscription security. Other subscriptions/agreements can differ.
+SQL **does not auto-pause**: database, Private Link, DNS and applicable Defender
+charges continue while idle until cleanup.
+`prepare`/`provision` query the selected region's actual Basic retail meter and
+refuse an unavailable tier rather than silently buying a larger one.
+Using the repository calculator's **$0.15/VUH** assumption and **10-user,
+10-minute per-engine billing floors**, the two-minute run is about **$0.25**,
+not its $0.01 raw-VUH cost. VNet injection also adds temporary public-IP/load-balancer
+charges (allow about **$0.03/hour plus traffic**, usually a few cents for the run).
+Plan roughly **$0.30-$0.35 for one short demonstration and prompt cleanup**;
+agreement rates, billing rounding, tax and existing infrastructure are excluded.
+This is an estimate, not a spending cap. No scheduled/repeated runs or monthly
+commitment is added to the existing ALT resource.
+
+Local regression coverage: `python -m unittest discover -s tests -p "test_sql_metrics*.py"`.
+
+References: [SQL retail price API](https://prices.azure.com/api/retail/prices),
+[ALT pricing](https://azure.microsoft.com/pricing/details/load-testing/),
+[supported SQL metrics](https://learn.microsoft.com/azure/azure-monitor/reference/supported-metrics/microsoft-sql-servers-databases-metrics),
+[server-side metrics](https://learn.microsoft.com/azure/app-testing/load-testing/how-to-monitor-server-side-metrics),
+[managed-identity endpoint authentication](https://learn.microsoft.com/azure/app-testing/load-testing/how-to-test-secured-endpoints#authenticate-with-a-managed-identity),
+[JDBC access-token connection properties](https://learn.microsoft.com/sql/connect/jdbc/setting-the-connection-properties#accessToken),
+[SQL service-principal SID/client-ID rules](https://learn.microsoft.com/sql/t-sql/statements/create-user-transact-sql#examples),
+and [VNet injection/temporary network costs](https://learn.microsoft.com/azure/app-testing/load-testing/how-to-test-private-endpoint).
+Private networking references:
+[SQL Private Link](https://learn.microsoft.com/azure/azure-sql/database/private-endpoint-overview),
+[Private Link pricing](https://azure.microsoft.com/pricing/details/private-link/),
+[private DNS pricing](https://azure.microsoft.com/pricing/details/dns/).
+[Defender for Cloud pricing](https://azure.microsoft.com/pricing/details/defender-for-cloud/)
+applies in addition when inherited protection is enabled.
 
 ---
 

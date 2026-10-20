@@ -1,0 +1,45 @@
+{
+  "displayName": "Isolated Azure SQL metrics",
+  "description": "Replaced with the instance ownership marker by tools.sql_metrics_demo",
+  "kind": "JMX",
+  "loadTestConfiguration": {
+    "engineInstances": 1,
+    "splitAllCSVs": false
+  },
+  "engineBuiltInIdentityType": "SystemAssigned",
+  "metricsReferenceIdentityType": "SystemAssigned",
+  "publicIPDisabled": false,
+  "autoStopCriteria": {
+    "autoStopDisabled": false,
+    "errorRate": 20,
+    "errorRateTimeWindowInSeconds": 60,
+    "maximumVirtualUsersPerEngine": 2
+  },
+  "passFailCriteria": {
+    "passFailMetrics": {
+      "no-errors": {
+        "clientMetric": "error",
+        "aggregate": "percentage",
+        "condition": ">",
+        "value": 0,
+        "action": "continue"
+      },
+      "real-sql-work": {
+        "clientMetric": "requests",
+        "aggregate": "count",
+        "condition": "<",
+        "value": 20,
+        "requestName": "SQLTransaction",
+        "action": "continue"
+      },
+      "bounded-latency": {
+        "clientMetric": "response_time_ms",
+        "aggregate": "p95",
+        "condition": ">",
+        "value": 10000,
+        "requestName": "SQLTransaction",
+        "action": "continue"
+      }
+    }
+  }
+}

@@ -57,7 +57,7 @@ Usage: tools/run_loadtest.sh [--test-id <id>] [options]
 
 Options:
   -t, --test-id <id>     Test definition to run, e.g. contoso-bank-peak-load
-  -a, --all              Run every deployed test definition, cheapest first
+  -a, --all              Run deployed tests cheapest first, excluding opt-in sql-metrics-* demos
   -r, --run-id <id>      Test run id (default "<testId>-YYYYmmdd-HHMMSS")
   -l, --list             List the available test definitions and exit
   -p, --preset <name>    POST 'bottlenecked' or 'optimized' to the demo app first
@@ -429,7 +429,8 @@ run_all_tests() {
     listing=$(load_cli test list --query "[].[loadTestConfiguration.engineInstances,testId]" -o tsv 2>/dev/null || true)
     [ -n "$listing" ] || fail "Could not list the tests deployed in '$LOAD_TEST_NAME'. Run 'tools/provision_loadtests.sh' first."
 
-    ids=$(printf '%s\n' "$listing" | sort -n -k1,1 -k2,2 | awk '{print $2}')
+    ids=$(printf '%s\n' "$listing" | sort -n -k1,1 -k2,2 | awk '$2 !~ /^sql-metrics-/ {print $2}')
+    [ -n "$ids" ] || fail "No batch-eligible tests are deployed. Opt-in SQL metrics tests use tools.sql_metrics_demo."
     total=$(printf '%s\n' "$ids" | grep -c .)
 
     say_step "Running all $total deployed test definition(s), cheapest first"

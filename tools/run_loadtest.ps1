@@ -30,7 +30,8 @@
     first (fewest engine instances). Each run gets its own generated run id, a
     failing run does not abandon the batch, and a summary table is printed at the
     end. Exits non-zero if any run did not pass. This spends real virtual user
-    hours across every definition - check the cost first.
+    hours across every definition - check the cost first. Opt-in sql-metrics-*
+    definitions are excluded; run those explicitly with tools.sql_metrics_demo.
 
 .PARAMETER List
     List the available test definitions and exit without spending any VUH.
@@ -651,6 +652,7 @@ function Get-DeployedTestIds {
     $rows = foreach ($test in $tests) {
         $id = [string](Get-ObjectPropertyValue $test 'testId')
         if ([string]::IsNullOrWhiteSpace($id)) { continue }
+        if ($id.StartsWith('sql-metrics-', [System.StringComparison]::OrdinalIgnoreCase)) { continue }
         $config = Get-ObjectPropertyValue $test 'loadTestConfiguration'
         $engines = Get-ObjectPropertyValue $config 'engineInstances'
         if ($null -eq $engines) { $engines = 1 }
@@ -667,7 +669,7 @@ function Invoke-AllTestRuns {
 
     $tests = Get-DeployedTestIds
     if ($tests.Count -eq 0) {
-        throw "No tests are deployed in '$($script:LoadTestName)'. Run 'pwsh -File tools/provision_loadtests.ps1' first."
+        throw "No batch-eligible tests are deployed in '$($script:LoadTestName)'. Run 'pwsh -File tools/provision_loadtests.ps1' first. Opt-in SQL metrics tests use tools.sql_metrics_demo."
     }
 
     Write-Step "Running all $($tests.Count) deployed test definition(s), cheapest first"
