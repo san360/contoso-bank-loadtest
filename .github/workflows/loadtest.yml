@@ -133,6 +133,9 @@ jobs:
             contoso-bank-secrets-kv)
               config='loadtests/config/secrets-demo.yaml'
               ;;
+            contoso-bank-secrets-kv-locust)
+              config='loadtests/config/secrets-demo-locust.yaml'
+              ;;
             contoso-bank-secrets-gh)
               config='loadtests/config/secrets-demo.yaml'
               override='{"testId":"contoso-bank-secrets-gh","displayName":"Contoso Bank - GitHub Secret Pipeline","description":"Runs the secrets JMeter script with API_KEY supplied by GitHub Actions."}'
@@ -160,13 +163,10 @@ jobs:
           loadTestRunDescription: GitHub Actions run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           outputVariableName: loadTestRun
           overrideParameters: ${{ steps.selected.outputs.override_parameters }}
-          secrets: |
-            [
-              {
-                "name": "API_KEY",
-                "value": "${{ secrets.DEMO_API_KEY }}"
-              }
-            ]
+          secrets: >-
+            ${{ steps.selected.outputs.test_id == 'contoso-bank-secrets-kv-locust'
+                && '[]'
+                || format('[{{"name":"API_KEY","value":{0}}}]', toJSON(secrets.DEMO_API_KEY)) }}
           env: |
             [
               {
