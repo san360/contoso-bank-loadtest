@@ -2,7 +2,7 @@
 
 A complete, runnable demo kit for presenting **Azure Load Testing** to a financial services customer.
 
-It contains a documented session agenda, a purpose-built banking API with deliberately planted (and instantly removable) performance bottlenecks, eight load test definitions across four artefact styles, infrastructure as code, and a CI/CD pipeline.
+It contains a documented session agenda, a purpose-built banking API with deliberately planted (and instantly removable) performance bottlenecks, load test definitions across four artefact styles, infrastructure as code, and a CI/CD pipeline.
 
 ---
 
@@ -137,7 +137,7 @@ Measured improvement (see [`tools/validate_bottlenecks.py`](./tools/validate_bot
 
 ---
 
-## Nine test definitions, four demo flavours
+## Load test definitions, four demo flavours
 
 The kit deliberately shows the same scenario several ways, because "how do we get started?" has different answers depending on who's asking. `azd up` creates all YAML definitions automatically.
 
@@ -152,6 +152,7 @@ The kit deliberately shows the same scenario several ways, because "how do we ge
 | **Peak load** | [`loadtests/config/peak-load.yaml`](./loadtests/config/peak-load.yaml) + JMeter | Headline 1,000-VU release/capacity test | 15 min run |
 | **Peak load (Locust)** | [`loadtests/config/peak-load-locust.yaml`](./loadtests/config/peak-load-locust.yaml) + Locust | Developer/Copilot-friendly equivalent | 15 min run |
 | **Key Vault secrets** | [`loadtests/config/secrets-demo.yaml`](./loadtests/config/secrets-demo.yaml) + JMeter | Managed identity secret-resolution demo | 1 min run |
+| **Key Vault secrets (Locust)** | [`loadtests/config/secrets-demo-locust.yaml`](./loadtests/config/secrets-demo-locust.yaml) + [`Locust script`](./loadtests/locust/secrets_locustfile.py) | Same secret check and ordered requests, with a five-user profile; [setup and commands](./docs/24-secrets-from-key-vault.md#2434-locust-counterpart) | 1 min run |
 
 ---
 
