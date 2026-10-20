@@ -37,6 +37,7 @@
       <p class="hint">The included test makes GET requests only: 5 users, 1 engine, 60 seconds. Azure minimum billing still applies.</p>
       <label for="test-id">Test ID</label>
       <input id="test-id" data-config="testId" maxlength="50" autocomplete="off">
+      <p class="hint">After changing the Test ID, preview Create again to generate matching YAML and CLI arguments.</p>
       <div class="section-heading"><label for="run-id">Run ID</label><button id="new-run" class="text-button">New ID</button></div>
       <input id="run-id" data-config="runId" maxlength="50" autocomplete="off">
       <div class="section-heading"><label for="run-picker">Existing runs</label><button id="load-run-list" class="text-button">Load runs</button></div>
@@ -135,7 +136,7 @@ az extension add --name load</pre>
           <div class="section-heading"><h3 id="yaml-heading">Azure Load Testing YAML</h3><button id="copy-yaml" class="text-button">Copy YAML</button></div>
           <p class="hint"><code id="yaml-path"></code></p>
           <pre id="yaml-content" tabindex="0" aria-label="Azure Load Testing YAML configuration"></pre>
-          <p class="hint">This file is read by <code>--load-test-config-file</code> below. <code>testPlan</code> references <code>smoke.jmx</code>, which defines the users, duration and GET request. The CLI's <code>--test-id</code> and <code>--env</code> override the YAML's test ID and target placeholders using the form.</p>
+          <p class="hint">This YAML is generated with the form's <strong>Test ID</strong>; the CLI's <code>--test-id</code> uses the same value. <code>--load-test-config-file</code> reads this exact file. <code>testPlan</code> references the adjacent copy of <code>smoke.jmx</code>, which defines the users, duration and GET request. <code>--env</code> supplies the target from the form. The repository templates are not changed.</p>
           <p class="hint"><a href="https://learn.microsoft.com/en-us/azure/app-testing/load-testing/reference-test-config-yaml" target="_blank" rel="noreferrer">Create a load test with YAML (Microsoft Learn)</a></p>
         </section>
         <div class="console-toolbar"><label for="shell">CLI shell</label><select id="shell"><option value="powershell">PowerShell</option><option value="bash">Bash</option></select><button id="copy-command" class="text-button" disabled>Copy</button><a id="script-download" class="text-button" hidden>Download step script</a></div>

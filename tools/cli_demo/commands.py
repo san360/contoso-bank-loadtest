@@ -45,8 +45,8 @@ ACTIONS = (
     Action("list-tests", "List test definitions", "lifecycle",
            "A definition is a reusable script and configuration, not an execution."),
     Action("create-test", "Create the small demo test", "lifecycle",
-           "Creates the test from smoke.yaml via --load-test-config-file and uploads its JMX: one engine, five users, 60 seconds, GET only.",
-           "This creates or updates the selected test ID. I have permission to test the target."),
+           "Uses YAML generated with your Test ID via --load-test-config-file: one engine, five users, 60 seconds, GET only.",
+           "This creates the selected test ID. I have permission to test the target."),
     Action("show-test", "Inspect test definition", "lifecycle",
            "Checks the uploaded configuration before spending virtual user hours."),
     Action("run-test", "Start a load test run", "lifecycle",
@@ -315,7 +315,7 @@ def build_commands(action_id: str, config: Config, artifact_dir: Path) -> list[C
     if action_id == "create-test":
         config.require("targetUrl")
         return [load(["test", "create", *config.test_scope(), "--load-test-config-file",
-                      str(ROOT / "loadtests" / "cli-demo" / "smoke.yaml"),
+                      str(artifact_dir / "smoke.yaml"),
                       *target_environment(config.targetUrl)], "test.json")]
     if action_id == "show-test":
         return [load(["test", "show", *config.test_scope()], "test.json")]

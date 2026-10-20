@@ -81,10 +81,11 @@ then execute **Create the small demo test**, **Start a load test run**, **Watch
 selected run**, and **Collect analysis bundle**. Starting a run requires explicit
 confirmation.
 
-The create preview shows the actual
-[`smoke.yaml`](./loadtests/cli-demo/smoke.yaml) and the
-`az load test create --load-test-config-file ...` command together. Copy the YAML,
-copy the PowerShell/Bash command, or download the step script for a terminal demo.
+The create preview generates a copy of
+[`smoke.yaml`](./loadtests/cli-demo/smoke.yaml) with the form's **Test ID**, then
+shows it beside the matching `az load test create --load-test-config-file ...`
+command. The repository template stays unchanged. Copy the YAML, copy the
+PowerShell/Bash command, or download the step script for a terminal demo.
 
 `az account set` changes the current CLI profile. For a dedicated demo profile,
 follow the `AZURE_CONFIG_DIR` setup in [doc 26](./docs/26-cli-demo-app-and-skills.md#different-tenants-and-cli-subscription-context).

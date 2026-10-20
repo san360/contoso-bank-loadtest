@@ -625,7 +625,7 @@ async function bootstrap() {
   }));
   $("copy-yaml").addEventListener("click", handle(async () => {
     await navigator.clipboard.writeText(plan.testConfig.content);
-    notify("YAML copied. The CLI preview supplies the target and test ID overrides.");
+    notify("YAML copied with the selected Test ID. The CLI preview supplies the target.");
   }));
   $("copy-migration").addEventListener("click", handle(async () => {
     await navigator.clipboard.writeText("Use the jmx-to-locust skill to convert loadtests/jmeter/contoso-bank.jmx into a new Locust test. Inventory its behavior first, preserve correlation, data, assertions and load shape, document gaps, and verify parity. Do not overwrite the existing Locust demo.");
