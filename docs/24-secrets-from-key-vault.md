@@ -197,6 +197,8 @@ az load test update `
 
 This updates the definition only; starting a run remains a separate, billable presenter step. For another environment, substitute its subscription, resource names, target host and Key Vault URI.
 
+The JMX reads the `threads`, `rampup` and `duration` environment values before falling back to JMeter properties or script defaults. This keeps the YAML demo profile at five users, a 15-second ramp and 60 seconds even though the shared `user.properties` contains a larger profile for other tests. Local runs without these environment values can still use `-J` properties.
+
 After a run, open **Test run -> Download -> Logs** and find:
 
 ```text

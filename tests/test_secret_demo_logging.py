@@ -51,13 +51,28 @@ class JMeterSecretDemoTests(unittest.TestCase):
         self.assertIn("log.warn(msg)", self.script)
         self.assertIn(
             "if ('true'.equalsIgnoreCase(System.getenv('DEMO_LOG_SECRET'))"
-            " && vars.getThreadNum() == 0) {\n"
+            " && ctx.getThreadNum() == 0) {\n"
             "        log.warn('DEMO ONLY: retrieved API_KEY={}', raw)\n"
             "    }",
             self.script,
         )
         self.assertNotIn("SampleResult.setResponseData(raw", self.script)
         self.assertNotIn("SampleResult.setResponseMessage(raw", self.script)
+        self.assertNotIn("vars.getThreadNum()", self.script)
+
+    def test_demo_environment_overrides_shared_load_profile_properties(self):
+        fields = (
+            ("ThreadGroup.num_threads", "threads", "5"),
+            ("ThreadGroup.ramp_time", "rampup", "15"),
+            ("ThreadGroup.duration", "duration", "60"),
+        )
+        for field, name, default in fields:
+            with self.subTest(field=field):
+                self.assertEqual(
+                    self.plan.findtext(f".//ThreadGroup/stringProp[@name='{field}']"),
+                    "${__groovy(System.getenv('" + name
+                    + "') ?: props.getProperty('" + name + "') ?: '" + default + "')}",
+                )
 
 
 class LocustSecretDemoTests(unittest.TestCase):
