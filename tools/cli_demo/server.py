@@ -28,8 +28,9 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from .commands import (
-    ACTION_BY_ID, ROOT, Command, Config, build_commands, csv_export, metric_rows,
-    public_actions, redact, run_verdict, script_for, tsv_export,
+    ACTION_BY_ID, INSIGHTS_API_VERSION, ROOT, Command, Config, build_commands, csv_export,
+    insights_view, load_endpoint, metric_rows, parse_test_list_tsv, public_actions, redact,
+    render_test_config, run_verdict, script_for, tsv_export,
 )
 
 LOG = logging.getLogger("cli_demo")
@@ -77,7 +78,7 @@ class CliRunner:
                 timeout=timeout, check=False,
             )
 
-        if command.args[0] == "load":
+        if command.args[0] in {"load", "rest"}:
             selected = command.args[command.args.index("--subscription") + 1]
             current = invoke(["account", "show", "--query", "id", "--output", "json", "--only-show-errors"], 45)
             if current.returncode:
@@ -86,13 +87,13 @@ class CliRunner:
             try:
                 active = json.loads(current.stdout)
             except json.JSONDecodeError as exc:
-                raise ValueError("The active CLI subscription could not be determined; no load command was run.") from exc
+                raise ValueError("The active CLI subscription could not be determined; no Load Testing command was run.") from exc
             if not isinstance(active, str) or active.lower() != selected.lower():
                 raise ValueError(
                     f"CLI context mismatch: configured subscription {selected}, active subscription {active}. "
                     "The load extension can ignore --subscription for data-plane operations. "
                     "Use the confirmed Select CLI subscription step, or start this app with a separately "
-                    "authenticated AZURE_CONFIG_DIR. No load command was run."
+                    "authenticated AZURE_CONFIG_DIR. No Load Testing command was run."
                 )
         return invoke(command.args, 600 if command.download else 180)
 
@@ -133,10 +134,17 @@ class App:
         self.lock = threading.RLock()
         self.plans: dict[str, Plan] = {}
         self.jobs: dict[str, dict[str, Any]] = {}
+        self.load_endpoints: dict[str, str] = {}
         self.pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="azure-cli")
 
     def preview(self, action: str, raw_config: Any) -> dict[str, Any]:
         config = Config.parse(raw_config)
+        if action == "ai-insights":
+            with self.lock:
+                endpoint = self.load_endpoints.get(config.load_resource_id().lower())
+            if not endpoint or config.loadTestEndpoint != endpoint:
+                raise ValueError("Resolve the Load Testing endpoint for this resource before retrieving insights. "
+                                 "Resolve it again after restarting the app or changing resources.")
         id_ = uuid.uuid4().hex
         directory = self.artifacts / id_
         commands = build_commands(action, config, directory)
@@ -158,10 +166,7 @@ class App:
                     content = template.read_text(encoding="utf-8")
                 except OSError as exc:
                     raise ValueError(f"Could not read the demo YAML configuration ({template}): {exc}") from exc
-                content, count = re.subn(r"(?m)^testId:.*$",
-                                         lambda _: f"testId: {json.dumps(config.testId)}", content)
-                if count != 1:
-                    raise ValueError("The demo YAML must define exactly one top-level testId.")
+                content = render_test_config(content, config)
                 args = commands[0].args
                 config_file = Path(args[args.index("--load-test-config-file") + 1])
                 if not config_file.is_absolute():
@@ -172,7 +177,8 @@ class App:
                     config_file.write_text(content, encoding="utf-8")
                 except OSError as exc:
                     raise ValueError(f"Could not prepare the demo YAML and JMX files ({config_file}): {exc}") from exc
-                test_config = {"path": args[args.index("--load-test-config-file") + 1], "content": content}
+                test_config = {"path": args[args.index("--load-test-config-file") + 1],
+                               "sourcePath": str(template.relative_to(ROOT)), "content": content}
             plan = Plan(id_, action, config, commands, directory, test_config=test_config)
             self.plans[id_] = plan
         return plan.public()
@@ -232,6 +238,8 @@ class App:
             plan.directory.mkdir(parents=True, exist_ok=True)
             with self.lock:
                 job["state"] = "running"
+                if plan.action == "resolve-load-endpoint":
+                    self.load_endpoints.pop(plan.config.load_resource_id().lower(), None)
             self._persist(plan)
             for command in plan.commands:
                 existing_downloads = ({path for path in (plan.directory / "files").rglob("*") if path.is_file()}
@@ -259,16 +267,32 @@ class App:
                 ):
                     raise ValueError("No new artifact files were downloaded, despite the CLI's zero exit code. "
                                      "Check artifact availability and ingestion delay; inspect stdout below.")
-                if command.artifact:
+                if command.artifact == "tests.tsv":
+                    table, content = parse_test_list_tsv(stdout)
+                    (plan.directory / command.artifact).write_text(content, encoding="utf-8", newline="")
+                    entry["table"] = table
+                elif command.artifact:
                     try:
                         data = redact(json.loads(result.stdout)) if (result.stdout or "").strip() else None
                     except json.JSONDecodeError as exc:
                         raise ValueError("Azure CLI returned non-JSON output. Inspect stdout; "
                                          "no result data was invented.") from exc
                     entry["data"] = data
+                    entry["format"] = "json"
                     entry["stdout"] = json.dumps(data, indent=2, ensure_ascii=True)[-24000:]
                     (plan.directory / command.artifact).write_text(
                         json.dumps(data, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+                    if command.artifact == "load-resource.json":
+                        resource_id = plan.config.load_resource_id()
+                        if (not isinstance(data, dict) or not isinstance(data.get("id"), str)
+                                or data["id"].lower() != resource_id.lower()):
+                            raise ValueError("Endpoint discovery did not return the selected Load Testing resource.")
+                        endpoint = load_endpoint(data.get("dataPlaneURI"))
+                        entry["loadEndpoint"] = endpoint
+                        with self.lock:
+                            self.load_endpoints[resource_id.lower()] = endpoint
+                    if command.artifact == "ai-insights.json":
+                        entry["insights"] = insights_view(data)
                     if command.artifact == "client-definitions.json":
                         client_definitions = data
                     if command.metric or command.namespace:
@@ -283,11 +307,18 @@ class App:
                                 job["warnings"].append(
                                     f"{command.artifact}: no metric datapoints were returned. "
                                     "Check ingestion delay, run times, metric name, permissions and retention.")
+                    if command.artifact == "run.json" and plan.action == "ai-insights" and not isinstance(data, dict):
+                        raise ValueError("The run metadata response must be an object before retrieving AI insights.")
                     if command.artifact == "run.json" and isinstance(data, dict):
                         entry["verdict"] = run_verdict(data)
-                        if plan.action == "all-client-metrics" and data.get("testId") != plan.config.testId:
+                        if plan.action in {"all-client-metrics", "ai-insights"} and data.get("testId") != plan.config.testId:
                             raise ValueError("The selected run does not belong to the configured test ID. "
                                              "Load runs for that test and select the matching execution.")
+                        if plan.action == "ai-insights":
+                            if data.get("testRunId") != plan.config.runId:
+                                raise ValueError("The returned run ID does not match the selected execution.")
+                            if str(data.get("status", "")).upper() not in TERMINAL:
+                                raise ValueError("Wait for the load test run to complete before retrieving AI insights.")
                         if plan.action == "collect-evidence" and str(data.get("status", "")).upper() not in TERMINAL:
                             raise ValueError("Run is not terminal yet. Wait for completion before collecting artifacts.")
                         if (plan.action == "collect-evidence" and plan.config.serverResourceId
@@ -471,6 +502,7 @@ class Handler(BaseHTTPRequestHandler):
                 ))
                 self._json({"token": self.server.app.token, "actions": public_actions(),
                             "defaults": defaults, "cliInstalled": shutil.which("az") is not None,
+                            "insightsApiVersion": INSIGHTS_API_VERSION,
                             "dataDirectory": str(self.server.app.data_dir)})
             elif path == "/api/artifacts":
                 self._json(self.server.app.saved_artifacts())

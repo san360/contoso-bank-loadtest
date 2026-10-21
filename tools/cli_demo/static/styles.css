@@ -21,6 +21,9 @@ a { color:var(--blue); }
 .topbar p { color:var(--muted); margin:0; font-size:13px; }
 .brand-mark { display:grid; place-items:center; width:42px; height:42px; border-radius:10px; background:var(--blue); color:white; font:700 20px Consolas,monospace; }
 .local-badge { margin-left:auto; font-size:10px; font-weight:700; letter-spacing:1px; color:#276144; background:#e8f5ec; padding:6px 10px; border-radius:5px; }
+.demo-disclaimer { margin:16px 28px 0; padding:14px 18px; border:1px solid #e3cb8c; border-left:4px solid #ad7715; border-radius:7px; background:#fff8e7; color:#62450f; }
+.demo-disclaimer strong { display:block; margin-bottom:4px; }
+.demo-disclaimer p { margin:0; font-size:13px; }
 .layout { display:grid; grid-template-columns:310px minmax(0,1fr); gap:24px; max-width:1480px; margin:24px auto; padding:0 28px; align-items:start; }
 .panel { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:22px; }
 .configuration { padding:20px; }
@@ -64,7 +67,7 @@ details pre { color:var(--ink); background:var(--bg); padding:10px; border-radiu
 .pill.warning { background:#fff5dc; color:#805800; }
 .console-panel { margin-top:24px; }
 .yaml-preview { margin-top:18px; }
-.console-toolbar { display:flex; align-items:center; gap:12px; margin-top:14px; }
+.console-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-top:14px; }
 .console-toolbar label { margin:0; }
 .console-toolbar select { width:auto; padding:4px 8px; font-size:12px; }
 #script-download { margin-left:auto; }
@@ -72,7 +75,22 @@ details pre { color:var(--ink); background:var(--bg); padding:10px; border-radiu
 .confirmation { display:flex; align-items:start; gap:9px; padding:12px; background:#fff8e7; color:#6e500f; border-radius:6px; margin:14px 0; font-size:12px; font-weight:500; }
 .confirmation input { margin:3px 0 0; }
 .output { margin:16px 0 0; background:#f4f7fc; border:1px solid var(--line); border-radius:7px; padding:16px; max-height:380px; overflow:auto; color:#33455f; font-size:11px; }
-.tsv-preview pre { white-space:pre; overflow-wrap:normal; tab-size:4; }
+.command-result + .command-result { border-top:1px solid var(--line); margin-top:16px; padding-top:16px; }
+.command-result h3 { font-size:12px; }
+.raw-output { margin:10px 0 0; }
+.output-message { white-space:pre-wrap; overflow-wrap:anywhere; margin:12px 0 0; }
+.json-viewer { font:12px/1.7 "Cascadia Code", Consolas, monospace; overflow-wrap:anywhere; }
+.json-node { margin:0; font:inherit; color:inherit; }
+.json-node > summary { font-weight:400; color:var(--muted); }
+.json-children { margin-left:8px; padding-left:16px; border-left:1px solid var(--line); }
+.json-line { white-space:pre-wrap; }
+.json-key { color:var(--ink); }
+.json-string { color:#17643c; }
+.json-number { color:#075bd8; }
+.json-boolean { color:#8047a8; }
+.json-null { color:var(--muted); font-style:italic; }
+.output .section-heading { flex-wrap:wrap; }
+.output .table-scroll { margin-top:0; }
 .notice { margin:16px 28px 0; padding:12px 16px; background:#eaf2ff; border:1px solid #bed6f8; border-radius:7px; color:#174d93; }
 .notice.error { background:#fff1f0; color:#a52a23; border-color:#edc1bc; }
 .result-panel { margin-top:18px; }
@@ -88,6 +106,14 @@ th { color:var(--muted); background:#f7f9fc; position:sticky; top:0; }
 .client-metric-card .metric-unit { font-size:12px; font-weight:400; color:var(--muted); margin-left:7px; }
 .client-metric-card .metric-empty { padding:22px 0; color:var(--muted); }
 .client-metric-card .metric-sparkline { height:100px; }
+.insights-cards { display:grid; gap:14px; margin-top:16px; }
+.insight-card { border:1px solid var(--line); border-radius:8px; padding:16px; min-width:0; }
+.insight-card.summary-card { border-color:#bfd3ee; background:#f5f9ff; }
+.insight-card dl { margin:0; }
+.insight-card dt { font-weight:600; font-size:12px; margin-top:12px; }
+.insight-card dd { margin:4px 0 0; white-space:pre-wrap; overflow-wrap:anywhere; }
+#insights-state { white-space:pre-wrap; overflow-wrap:anywhere; }
+#insights-result > .section-heading { flex-wrap:wrap; }
 .file-list { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0; }
 .file-link { display:inline-block; text-decoration:none; border:1px solid var(--line); border-radius:5px; padding:6px 9px; background:white; font-size:12px; overflow-wrap:anywhere; }
 .bundle-link { border-color:#9abbe9; background:#edf4ff; font-weight:600; }

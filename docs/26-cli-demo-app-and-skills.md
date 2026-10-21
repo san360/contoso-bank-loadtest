@@ -8,6 +8,12 @@ for the CLI. No new infrastructure is required.
 It is deliberately separate from the deployed Contoso Bank API. Never add a
 cloud-credential command runner to the public banking app.
 
+The persistent **Independent demonstration application** banner states:
+
+> This application is independently developed for demonstration and educational
+> purposes only. It is not an official Microsoft Azure offering and is not
+> provided or supported by Microsoft. It is not intended for production use.
+
 ## Start the app
 
 Requirements: Python 3.11+, Azure CLI 2.66+, the `load` extension, and an existing
@@ -148,6 +154,7 @@ without authorization.
 | --- | --- |
 | Discover/resolve Azure resources | Management-plane read access, commonly **Reader**, scoped to the relevant resource group/subscription |
 | Inspect existing tests/runs | **Load Test Reader**, or a stronger Load Testing data-plane role |
+| Read existing AI insights | Load Testing data-plane read permissions for the run and insights, plus management-plane read access for endpoint discovery |
 | Create/update definitions, attach monitoring configuration, start/stop runs | **Load Test Contributor** on the Load Testing resource |
 | Query server metric values | Azure Monitor metrics read access, commonly **Monitoring Reader**, on the application resources |
 
@@ -160,6 +167,23 @@ confirmed **Select CLI subscription** step.
 
 ## Suggested presenter flow
 
+On **Create & run**, choose **List test definitions output** before previewing
+**List test definitions**. **JSON** keeps the complete response and displays it
+in an expandable, type-colored viewer; use **Copy JSON** for pretty-printed JSON.
+Other JSON command results use the same viewer. **Raw CLI output** retains the
+command, stdout and stderr for troubleshooting.
+
+**TSV** changes the actual command to `--output tsv` with an ordered `--query`
+projection of test ID, display name, test type and engine count. The UI displays
+these as columns, not raw tabs, and provides **Copy TSV** and a headered
+`tests.tsv` download. Tables preview at most 200 rows; copying/downloading
+retains every returned row. The copied command and downloaded step script honor
+the chosen format. This selector affects only listing test definitions; metric
+commands continue requesting JSON so nested datapoints can be flattened correctly.
+Definitions with embedded tabs/newlines cannot be reliably represented by the
+CLI's unquoted TSV output; the app reports misaligned rows explicitly and asks
+for JSON instead.
+
 ### 1. Create a test definition
 
 Use a distinct test ID such as `cli-demo-smoke`. Set an authorized target URL, for
@@ -171,18 +195,23 @@ generated file; the CLI preview, **Copy** and **Download step script** use the s
 selected test configuration in PowerShell or Bash. Confirm the target, then execute.
 
 Each create preview writes a separate `smoke.yaml` with `testId` taken from the
-form's **Test ID**, plus a copy of `smoke.jmx` beside it. The files live in the
+form's **Test ID** and environment values taken from the **Authorized target URL**,
+plus a copy of `smoke.jmx` beside it. The files live in the
 local artifact directory (by default,
 `.loadtest-demo/artifacts/<preview-id>/`). This prepares local inputs only;
 previewing does not execute Azure CLI or create anything in Azure. The generated
 YAML shown and copied in the UI is the exact file used by the command and
 downloaded step scripts. Separate previews do not overwrite each other's inputs.
-After changing the Test ID, preview **Create** again before executing it.
+After changing the Test ID or target URL, preview **Create** again before executing it.
 
 With the default data directory, the CLI uses a **checkout-relative** path such as
 `.loadtest-demo\artifacts\<preview-id>\smoke.yaml`, not an absolute Copilot
 worktree/session path. The server resolves that path from the repository root.
 An explicitly configured external `--data-dir` is respected for local execution.
+The preview labels the **source template** and **generated file** separately.
+The latter is the exact path passed to `--load-test-config-file`; the source
+template is not accidentally loaded in its place. Bash command previews use
+Bash-compatible path separators.
 
 Downloaded **create-step scripts** are portable to another normal checkout:
 run the script from that checkout's root. It writes the selected YAML into a
@@ -205,10 +234,14 @@ clone of `main` includes the source templates and the runnable app.
 The test uses **one engine, five users, ten-second ramp-up, 60-second scheduled
 duration, one-second per-user pacing**, and one GET request. A 200 response is
 asserted; error percentage and average response time have fail criteria.
-`example.invalid` in the YAML is an intentionally unusable placeholder; the UI
-supplies the actual host, scheme, port and path with `--env`. The CLI's
-`--test-id` matches the selected test ID written into the generated YAML.
-The target arguments override the YAML's placeholder values. Users, ramp-up, duration and pacing
+`example.invalid` in the **source template** is an intentionally unusable
+placeholder. The UI replaces it in the **generated YAML** with the authorized
+host, and also writes the selected scheme, port and path (including query
+parameters) into `DEMO_PROTOCOL`, `DEMO_PORT` and `DEMO_PATH`. The CLI's `--env`
+arguments contain those same values, not a different target, and its `--test-id`
+matches the selected test ID written into the generated YAML. Copying YAML or
+downloading a step script therefore retains the authorized target.
+Users, ramp-up, duration and pacing
 are defined in the referenced JMX, not by `engineInstances` alone.
 
 The YAML uses the [official Azure Load Testing configuration format](https://learn.microsoft.com/en-us/azure/app-testing/load-testing/reference-test-config-yaml),
@@ -299,7 +332,7 @@ response cannot overwrite results for a newly selected scope.
 while **Get engine health** remains separate. Both keep the existing single-series
 chart/table and JSON/CSV/TSV exports.
 
-Expand **View flattened TSV** to list the tab-separated rows and use **Copy TSV**
+Expand **View flattened TSV as columns** to read an aligned table and use **Copy TSV**
 to paste them into a terminal, spreadsheet, or another tool. TSV files have a
 header and the same columns as CSV: `timestamp`, `namespace`, `metric`, `unit`,
 `dimensions`, `aggregation`, and `value`. Names and units stay attached to every
@@ -328,7 +361,78 @@ The `az load test-run metrics` CLI accepts client/engine namespaces, not an
 invented `ServerMetrics` namespace. Client load-test measurements do not become
 Azure Monitor metrics on the Load Testing resource.
 
-### 5. Download evidence
+### 5. Read AI insights through REST
+
+On **AI insights**, select the existing resource, test ID and completed run.
+Preview and execute **Resolve Load Testing endpoint** first. It uses
+`az resource show` on the fully scoped resource ARM ID and reads
+`properties.dataPlaneURI`; the endpoint is not derived from a resource name or
+accepted from an arbitrary URL. The app binds the verified public-cloud endpoint
+to that resource for this server session. Resolve it again after a page reload,
+app restart or resource change.
+
+Next, preview and execute **Get latest AI insights**. The plan first reads the
+run metadata and checks the selected test/run IDs and terminal execution state.
+It then executes this read-only REST request through the existing Azure CLI login:
+
+```powershell
+az rest --method get `
+  --url "https://<resolved-dataPlaneURI>/test-runs/<run-id>/insights/latest?api-version=2026-04-01" `
+  --resource "https://cnt-prod.loadtesting.azure.com" `
+  --subscription "<subscription-guid>" `
+  --output json
+```
+
+Use the host returned by endpoint discovery, not a guessed hostname. The
+`--resource` argument selects the Load Testing token audience rather than Azure
+Resource Manager. Tokens are handled by the CLI, not exposed in the browser,
+copied commands or downloaded scripts. The app's active-subscription guard also
+applies to this REST command. The UI currently supports Azure public-cloud
+production data-plane endpoints only.
+
+The implementation follows the published
+[2026-04-01 REST contract](https://github.com/Azure/azure-rest-api-specs/blob/main/specification/loadtestservice/data-plane/loadtesting/stable/2026-04-01/loadtestservice.json)
+and its
+[get-latest-insights response example](https://github.com/Azure/azure-rest-api-specs/blob/main/specification/loadtestservice/data-plane/loadtesting/examples/2026-04-01/GetTestRunLatestInsights.json).
+The important response fields are:
+
+| Field | Meaning and presentation |
+| --- | --- |
+| `status` | Insight-generation state: `NotStarted`, `Running`, `Succeeded`, `Failed` or `Canceled`. This is not the load test's pass/fail verdict. Unknown states remain visibly unconfirmed. |
+| `version` | Insights revision, not the REST API version. A missing revision is labeled as not returned. |
+| `columns` | Definitions containing `name` and `dataType`; these describe the returned content rather than a fixed summary object. |
+| `rows` | A dictionary of row IDs to dictionaries of string-valued cells. A summary can occupy its own row, separate from findings and recommendations. |
+
+The view presents `Title`, `Insight`, `Details`, `Summary`, `Recommendation` and
+other returned fields without executing HTML, Markdown or work-item links from
+AI-generated text. Additional fields are retained. **View response JSON** uses the
+expandable JSON viewer and **Copy JSON**; `ai-insights.json`, run metadata and the
+manifest are saved in this operation's evidence folder. Credential redaction
+applies as it does to other JSON exports.
+
+A successful GET is not evidence of successful insight generation.
+`NotStarted`/`Running` responses stay pending, `Failed`/`Canceled` stay visibly
+unsuccessful, and a completed response with no rows does not claim that no issues
+exist. An invalid response schema fails explicitly while preserving JSON evidence.
+This contract uses keyed rows; older preview APIs with array-shaped rows are not
+silently interpreted as the current API.
+
+Azure generates insights **on demand**. This viewer does not call the separate
+`POST /test-runs/{testRunId}/insights:generate` operation or modify insight
+content. If none exist, explicitly generate them in the Azure portal's
+**AI summary and insights** section, then fetch again. Permission failures,
+not-found responses, unsupported operation/version errors and throttling remain
+visible in CLI stderr; the app neither invents empty insights nor silently
+retries a different API version. **Collect analysis bundle** remains unchanged;
+insights have their own explicit read operation and evidence bundle.
+
+The [actionable-insights guide](https://learn.microsoft.com/azure/app-testing/load-testing/how-to-analyze-test-results-using-actionable-insights)
+still labels the feature **Preview**, independently of the stable REST contract.
+Server-side metrics improve the available context. AI content can be inaccurate:
+review supporting telemetry before acting on a recommendation. The local
+regression/browser fixtures are synthetic, not analysis of a live Azure run.
+
+### 6. Download evidence
 
 Use **Download engine logs**, **Download request results** or **Download JMeter
 HTML report**. Downloads are the service's original archives. Reports may not

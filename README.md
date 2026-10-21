@@ -2,7 +2,7 @@
 
 A complete, runnable demo kit for presenting **Azure Load Testing** to a financial services customer.
 
-It contains a documented session agenda, a purpose-built banking API with deliberately planted (and instantly removable) performance bottlenecks, eight load test definitions across four artefact styles, infrastructure as code, and a CI/CD pipeline.
+It contains a documented session agenda, a purpose-built banking API with deliberately planted (and instantly removable) performance bottlenecks, load test definitions across four artefact styles, infrastructure as code, and a CI/CD pipeline.
 
 ---
 
@@ -82,10 +82,25 @@ selected run**, and **Collect analysis bundle**. Starting a run requires explici
 confirmation.
 
 The create preview generates a copy of
-[`smoke.yaml`](./loadtests/cli-demo/smoke.yaml) with the form's **Test ID**, then
-shows it beside the matching `az load test create --load-test-config-file ...`
-command. The repository template stays unchanged. Copy the YAML, copy the
+[`smoke.yaml`](./loadtests/cli-demo/smoke.yaml) with the form's **Test ID** and
+**authorized target URL**, including its host, protocol, port and path. It labels
+the unchanged source template separately from the generated file read by
+`az load test create --load-test-config-file ...`. Copy the YAML, copy the
 PowerShell/Bash command, or download the step script for a terminal demo.
+
+**List test definitions output** offers JSON or TSV. JSON results use an
+expandable, type-colored viewer with **Copy JSON**; TSV results appear as readable
+columns with a headered download and **Copy TSV**. Raw CLI output remains available.
+
+The **AI insights** tab reads existing Azure-generated summaries, evidence and
+recommendations for a completed run through the Load Testing REST API. Resolve
+the resource endpoint first, then fetch the selected run's insights. Generation
+status is shown separately from the test verdict, and the response is available
+as expandable JSON and a download. The app does not generate insights automatically.
+
+A permanent banner identifies the CLI lab as an **independently developed,
+unofficial demonstration application**, not an offering provided or supported
+by Microsoft and not intended for production use.
 
 `az account set` changes the current CLI profile. For a dedicated demo profile,
 follow the `AZURE_CONFIG_DIR` setup in [doc 26](./docs/26-cli-demo-app-and-skills.md#different-tenants-and-cli-subscription-context).
@@ -300,7 +315,7 @@ Measured improvement (see [`tools/validate_bottlenecks.py`](./tools/validate_bot
 
 ---
 
-## Nine test definitions, four demo flavours
+## Load test definitions, four demo flavours
 
 The kit deliberately shows the same scenario several ways, because "how do we get started?" has different answers depending on who's asking. `azd up` creates all YAML definitions automatically.
 
@@ -315,6 +330,7 @@ The kit deliberately shows the same scenario several ways, because "how do we ge
 | **Peak load** | [`loadtests/config/peak-load.yaml`](./loadtests/config/peak-load.yaml) + JMeter | Headline 1,000-VU release/capacity test | 15 min run |
 | **Peak load (Locust)** | [`loadtests/config/peak-load-locust.yaml`](./loadtests/config/peak-load-locust.yaml) + Locust | Developer/Copilot-friendly equivalent | 15 min run |
 | **Key Vault secrets** | [`loadtests/config/secrets-demo.yaml`](./loadtests/config/secrets-demo.yaml) + JMeter | Managed identity secret-resolution demo | 1 min run |
+| **Key Vault secrets (Locust)** | [`loadtests/config/secrets-demo-locust.yaml`](./loadtests/config/secrets-demo-locust.yaml) + [`Locust script`](./loadtests/locust/secrets_locustfile.py) | Same secret check and ordered requests, with a five-user profile; [setup and commands](./docs/24-secrets-from-key-vault.md#2434-locust-counterpart) | 1 min run |
 
 ---
 

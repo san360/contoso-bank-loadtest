@@ -21,6 +21,9 @@ SECRET_KEY = re.compile(
     r"(?i)(password|passwd|secret|token|authorization|api[-_]?key|"
     r"connection[-_]?string|^sig$|^sas$)"
 )
+TEST_LIST_COLUMNS = ("Test ID", "Display name", "Type", "Engines")
+INSIGHTS_API_VERSION = "2026-04-01"
+LOAD_TEST_AUDIENCE = "https://cnt-prod.loadtesting.azure.com"
 
 
 @dataclass(frozen=True)
@@ -43,9 +46,9 @@ ACTIONS = (
     Action("resources", "Find Load Testing resources", "setup",
            "Discovers existing resources in the selected subscription; creates nothing."),
     Action("list-tests", "List test definitions", "lifecycle",
-           "A definition is a reusable script and configuration, not an execution."),
+           "Choose JSON or readable TSV columns. A definition is a reusable script and configuration, not an execution."),
     Action("create-test", "Create the small demo test", "lifecycle",
-           "Uses YAML generated with your Test ID via --load-test-config-file: one engine, five users, 60 seconds, GET only.",
+           "Uses YAML generated with your Test ID and authorized target: one engine, five users, 60 seconds, GET only.",
            "This creates the selected test ID. I have permission to test the target."),
     Action("show-test", "Inspect test definition", "lifecycle",
            "Checks the uploaded configuration before spending virtual user hours."),
@@ -85,6 +88,10 @@ ACTIONS = (
            "This updates server-metric configuration on the selected test definition."),
     Action("server-metrics", "Get server metric values", "server",
            "Queries Azure Monitor on the application resource using the run's start and end times."),
+    Action("resolve-load-endpoint", "Resolve Load Testing endpoint", "insights",
+           "Reads the selected resource's data-plane endpoint from Azure Resource Manager. Creates nothing."),
+    Action("ai-insights", "Get latest AI insights", "insights",
+           "Reads existing AI-generated insights for the selected completed run via REST. Does not generate insights or start traffic."),
     Action("download-logs", "Download engine logs", "downloads",
            "Downloads engine log ZIPs. These are different from application/server logs."),
     Action("download-results", "Download request results", "downloads",
@@ -103,9 +110,11 @@ class Config:
     subscription: str = ""
     resourceGroup: str = ""
     loadTestResource: str = ""
+    loadTestEndpoint: str = ""
     testId: str = "cli-demo-smoke"
     runId: str = ""
     targetUrl: str = ""
+    testListOutput: str = "json"
     clientMetric: str = "ResponseTime"
     engineMetric: str = "CPU"
     serverResourceId: str = ""
@@ -133,24 +142,35 @@ class Config:
                 raise ValueError(f"{key} must not contain control characters.")
             if item.strip().startswith("-"):
                 raise ValueError(f"{key} must not be an option.")
-        return cls(**{key: item.strip() for key, item in value.items()})
+        config = cls(**{key: item.strip() for key, item in value.items()})
+        if config.testListOutput not in {"json", "tsv"}:
+            raise ValueError("Choose json or tsv for testListOutput.")
+        return config
 
     def require(self, *names: str) -> None:
         for name in names:
             if not getattr(self, name):
                 raise ValueError(f"Configure {name} before using this command.")
 
-    def load_scope(self) -> list[str]:
+    def load_resource_id(self) -> str:
         self.require("subscription", "resourceGroup", "loadTestResource")
         if not GUID.fullmatch(self.subscription):
             raise ValueError("Use a subscription GUID, not a display name.")
         for name in ("resourceGroup", "loadTestResource"):
             if not RESOURCE_NAME.fullmatch(getattr(self, name)):
                 raise ValueError(f"{name} contains an invalid resource name.")
-        resource_id = (f"/subscriptions/{self.subscription}/resourceGroups/{self.resourceGroup}"
-                       f"/providers/Microsoft.LoadTestService/loadTests/{self.loadTestResource}")
+        return (f"/subscriptions/{self.subscription}/resourceGroups/{self.resourceGroup}"
+                f"/providers/Microsoft.LoadTestService/loadTests/{self.loadTestResource}")
+
+    def load_scope(self) -> list[str]:
         return ["--subscription", self.subscription, "--resource-group", self.resourceGroup,
-                "--load-test-resource", resource_id]
+                "--load-test-resource", self.load_resource_id()]
+
+    def insights_url(self) -> str:
+        self.run_scope()
+        self.require("loadTestEndpoint")
+        endpoint = load_endpoint(self.loadTestEndpoint)
+        return f"{endpoint}/test-runs/{self.runId}/insights/latest?api-version={INSIGHTS_API_VERSION}"
 
     def test_scope(self) -> list[str]:
         self.require("testId")
@@ -205,6 +225,10 @@ class Command:
 def shell_command(args: tuple[str, ...] | list[str], shell: str = "powershell") -> str:
     tokens = ["az", *args]
     if shell == "bash":
+        for option in ("--load-test-config-file", "--path"):
+            if option in tokens:
+                index = tokens.index(option) + 1
+                tokens[index] = Path(tokens[index]).as_posix()
         return shlex.join(tokens)
     def quote(token: str) -> str:
         if re.fullmatch(r"[A-Za-z0-9_./:=@-]+", token):
@@ -282,14 +306,77 @@ def target_environment(target: str) -> list[str]:
             f"DEMO_PORT={port}", f"DEMO_PATH={path}"]
 
 
+def render_test_config(template: str, config: Config) -> str:
+    content, count = re.subn(r"(?m)^testId:.*$",
+                            lambda _: f"testId: {json.dumps(config.testId)}", template)
+    if count != 1:
+        raise ValueError("The demo YAML must define exactly one top-level testId.")
+    for assignment in target_environment(config.targetUrl)[1:]:
+        name, value = assignment.split("=", 1)
+        pattern = rf"(?m)^(  - name: {name}\r?\n    value:)[^\r\n]*"
+        content, count = re.subn(pattern, lambda match: f"{match[1]} {json.dumps(value)}", content)
+        if count != 1:
+            raise ValueError(f"The demo YAML must define exactly one env value for {name}.")
+    return content
+
+
+def load_endpoint(value: Any) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError("Azure did not return a Load Testing data-plane endpoint. Resolve the resource again.")
+    if any(ord(char) < 33 for char in value):
+        raise ValueError("The Load Testing endpoint must not contain whitespace or control characters.")
+    try:
+        url = urlsplit(value if "://" in value else "https://" + value)
+        if (url.scheme != "https" or not url.hostname or url.username is not None or url.password is not None
+                or url.port is not None or url.path not in {"", "/"} or url.query or url.fragment
+                or not re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*\.cnt-prod\.loadtesting\.azure\.com",
+                                    url.hostname)):
+            raise ValueError("Unexpected endpoint.")
+    except ValueError as exc:
+        raise ValueError("Use the Azure public-cloud Load Testing endpoint returned by resource discovery, "
+                         "without a custom port, path, query or credentials.") from exc
+    return f"https://{url.hostname}"
+
+
+def insights_view(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict) or "error" in payload:
+        raise ValueError("The insights API did not return a TestRunInsights object. Inspect the response JSON.")
+    status = payload.get("status", "Unknown")
+    if not isinstance(status, str) or not status:
+        raise ValueError("The insights response status must be a non-empty string.")
+    version = payload.get("version")
+    if version is not None and (isinstance(version, bool) or not isinstance(version, int)):
+        raise ValueError("The insights response version must be an integer.")
+    columns = payload.get("columns", [])
+    if not isinstance(columns, list) or any(
+        not isinstance(column, dict) or not isinstance(column.get("name"), str) or not column["name"]
+        or not isinstance(column.get("dataType"), str) for column in columns
+    ):
+        raise ValueError("The insights response columns must contain name/dataType definitions.")
+    names = list(dict.fromkeys(column["name"] for column in columns))
+    rows = payload.get("rows", {})
+    if not isinstance(rows, dict):
+        raise ValueError("The insights response rows must be keyed objects for API version "
+                         f"{INSIGHTS_API_VERSION}. Inspect the response JSON.")
+    normalized = []
+    for id_, values in rows.items():
+        if not isinstance(values, dict) or any(not isinstance(value, str) for value in values.values()):
+            raise ValueError("Each insight row must map column names to string values.")
+        normalized.append({"id": id_, "values": values})
+        for name in values:
+            if name not in names:
+                names.append(name)
+    return {"status": status, "version": version, "columns": names, "rows": normalized}
+
+
 def build_commands(action_id: str, config: Config, artifact_dir: Path) -> list[Command]:
     if action_id not in ACTION_BY_ID:
         raise ValueError("Unknown demo action. Arbitrary commands are not supported.")
-    common = ["--only-show-errors", "--output", "json"]
-
     def command(args: list[str], artifact: str = "", metric: str = "",
                 namespace: str = "", download: bool = False) -> Command:
-        return Command(tuple([*args, *common]), artifact, metric, namespace, download)
+        output = "tsv" if artifact.endswith(".tsv") else "json"
+        return Command(tuple([*args, "--only-show-errors", "--output", output]),
+                       artifact, metric, namespace, download)
 
     if action_id == "subscriptions":
         return [command(["account", "list", "--query",
@@ -331,6 +418,19 @@ def build_commands(action_id: str, config: Config, artifact_dir: Path) -> list[C
 
     scope = config.load_scope()
 
+    if action_id == "resolve-load-endpoint":
+        return [command(["resource", "show", "--subscription", config.subscription,
+                         "--ids", config.load_resource_id(),
+                         "--query", "{id:id,dataPlaneURI:properties.dataPlaneURI}"], "load-resource.json")]
+    if action_id == "ai-insights":
+        config.test_scope()
+        return [
+            *build_commands("show-run", config, artifact_dir),
+            command(["rest", "--method", "get", "--url", config.insights_url(),
+                     "--resource", LOAD_TEST_AUDIENCE, "--subscription", config.subscription],
+                    "ai-insights.json"),
+        ]
+
     def load(args: list[str], artifact: str = "", metric: str = "",
              namespace: str = "", download: bool = False) -> Command:
         return command(["load", *args, *scope], artifact, metric, namespace, download)
@@ -347,6 +447,12 @@ def build_commands(action_id: str, config: Config, artifact_dir: Path) -> list[C
                      "--path", str(artifact_dir / "files"), "--force", flag], download=True)
 
     if action_id == "list-tests":
+        if config.testListOutput == "tsv":
+            return [load(["test", "list", "--query",
+                          "[].[testId,displayName,testType,loadTestConfiguration.engineInstances]"],
+                         "tests.tsv")]
+        if config.testListOutput != "json":
+            raise ValueError("Choose json or tsv for testListOutput.")
         return [load(["test", "list"], "tests.json")]
     if action_id == "create-test":
         config.require("targetUrl")
@@ -529,6 +635,27 @@ def metric_rows(payload: Any, metric: str = "", namespace: str = "",
     return rows
 
 
+def _spreadsheet_value(value: Any) -> Any:
+    if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r")):
+        return "'" + value
+    return value
+
+
+def parse_test_list_tsv(stdout: str) -> tuple[dict[str, Any], str]:
+    try:
+        rows = list(csv.reader(io.StringIO(stdout), delimiter="\t", quoting=csv.QUOTE_NONE))
+    except csv.Error as exc:
+        raise ValueError("Could not read Azure CLI TSV output. Select JSON and inspect raw stdout below.") from exc
+    if any(len(row) != len(TEST_LIST_COLUMNS) for row in rows):
+        raise ValueError("Azure CLI returned unexpected TSV columns. Select JSON for definitions "
+                         "containing embedded tabs or newlines; inspect raw stdout below.")
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, delimiter="\t")
+    writer.writerow(TEST_LIST_COLUMNS)
+    writer.writerows([_spreadsheet_value(value) for value in row] for row in rows)
+    return {"headers": list(TEST_LIST_COLUMNS), "rows": rows}, output.getvalue()
+
+
 def _delimited_export(payload: Any, metric: str, namespace: str, definitions: Any, delimiter: str) -> str:
     output = io.StringIO(newline="")
     columns = ["timestamp", "namespace", "metric", "unit", "dimensions", "aggregation", "value"]
@@ -536,9 +663,7 @@ def _delimited_export(payload: Any, metric: str, namespace: str, definitions: An
     writer.writeheader()
     for row in metric_rows(payload, metric, namespace, definitions):
         # Downloads can be opened in Excel; do not allow a metric/dimension to become a formula.
-        writer.writerow({key: "'" + value if isinstance(value, str)
-                         and value.startswith(("=", "+", "-", "@", "\t", "\r")) else value
-                         for key, value in row.items()})
+        writer.writerow({key: _spreadsheet_value(value) for key, value in row.items()})
     return output.getvalue()
 
 

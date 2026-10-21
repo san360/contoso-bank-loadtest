@@ -14,6 +14,7 @@ Yes, the repo ships a test case for this:
 |---|---|
 | Key Vault test ID | `contoso-bank-secrets-kv` in [`loadtests/config/secrets-demo.yaml`](../loadtests/config/secrets-demo.yaml) |
 | Script | [`loadtests/jmeter/contoso-bank-secrets.jmx`](../loadtests/jmeter/contoso-bank-secrets.jmx) |
+| Locust counterpart | `contoso-bank-secrets-kv-locust` in [`loadtests/config/secrets-demo-locust.yaml`](../loadtests/config/secrets-demo-locust.yaml), using [`secrets_locustfile.py`](../loadtests/locust/secrets_locustfile.py); see [§24.3.4](#2434-locust-counterpart) |
 | Secret name exposed to the test | `API_KEY` |
 | Secret source | Key Vault secret URI `https://kv-loadtest-27d2e5.vault.azure.net/secrets/demo-api-key` |
 | Where the secret is resolved | The `Secret Variables` User Defined Variables element, into `udv_apiKey` |
@@ -215,6 +216,114 @@ The existing Locust `on_test_start` hook supports the same flag and logs once pe
 Azure Load Testing retains `WARN` and `ERROR` messages in normal worker logs, so these messages deliberately use warning-level logging rather than `INFO`. A warning does not itself fail a test.
 
 After presenting, reapply the same YAML without `--env DEMO_LOG_SECRET=true` to restore the default `"false"`. Turning it off does **not** remove plaintext from earlier run logs. Keep those artefacts private, do not publish them in CI/PR evidence, and discard or rotate the exposed demo value.
+
+### 24.3.4 Locust counterpart
+
+[`secrets-demo-locust.yaml`](../loadtests/config/secrets-demo-locust.yaml) defines
+`contoso-bank-secrets-kv-locust`, using
+[`secrets_locustfile.py`](../loadtests/locust/secrets_locustfile.py) and
+[`secrets.conf`](../loadtests/locust/secrets.conf). It is a separate migration of
+the secrets JMX, not the randomized four-journey peak-load Locust demo.
+
+Azure Load Testing fetches the YAML's `API_KEY` Key Vault secret using the load
+test resource's managed identity and makes the resolved value available through
+`os.getenv("API_KEY")`. No Azure SDK or credential is embedded in the script.
+The identity still needs **Key Vault Secrets User** and an admitted network path
+to the vault. The default system-assigned identity is the same as the JMX test;
+an existing user-assigned Key Vault reference identity can be configured on the
+new definition if required.
+
+This measures **secret resolution and transport to the app**, not repeated Key
+Vault reads or Key Vault service throughput. As with the JMX, the current API
+does not validate the header, so this is not proof of application authentication.
+
+| Source behavior | Locust implementation | Offline verification / intentional difference |
+|---|---|---|
+| Resolve `API_KEY` at user startup; check once per thread | Read the injected environment value in `on_start`; emit a `SECRET` request event named `SecretResolutionCheck` | One check per user; blank and unresolved values fail. Unlike the JMX's continue-on-error policy, invalid secrets stop the user before HTTP and set a nonzero local exit code. Line breaks are also rejected because the value becomes a header. |
+| Log length and eight-character SHA-256 prefix; optional disposable-value logging | Same warning-level evidence; `DEMO_LOG_SECRET=true` logs plaintext only for the first successful user per process, reset each run | Normal logs and check events do not contain the secret. Opt-in remains unsafe for real credentials. |
+| Balance then health, both with `Accept` and bearer `Authorization` headers, HTTP 200 assertions | One ordered task using a per-user session, the same sampler names, redirects enabled and `(10, 30)` second connect/read timeouts | Recorded HTTP traces cover ordering, headers, empty bodies/queries, redirects and non-200 failures. Health still runs after a failed balance request. |
+| No timers, CSV, extractors or CookieManager | Zero task wait, fixed `accountId` (default `ACC-1001`), cookies cleared before each sampler | Two iterations retain the user's secret/account but do not carry response cookies to the next sampler. Cookies within a redirect chain and low-level HTTP/TLS timing remain client-specific. |
+| Five threads, 15-second ramp window, 60-second scheduled run on one engine | Native `users=5`, `spawn-rate=1/3`, `run-time=60s`; Azure overrides use integer `LOCUST_RUN_TIME="60"` | Dispatcher checks user starts at approximately 0, 3, 6, 9 and 12 seconds and shutdown; the ramp is included in the 60 seconds. This matches the configured profile, not exact throughput or percentiles. |
+| Five fail criteria and 90%/60-second AutoStop | Same criteria and AutoStop, including zero tolerated secret-check failures | Configuration checks compare both YAML definitions and resolve the new script/config paths. |
+
+The committed definition uses **one engine and five users total**. Microsoft
+documents Locust user/spawn settings as overall load and runs a LocalRunner on
+each Azure engine. Do not multiply this test's `LOCUST_USERS` by engine count
+based on JMeter or upstream distributed-Locust assumptions; recheck the Azure
+runtime's distribution when changing the engine count.
+
+After retargeting the hostname and Key Vault URI for your environment, create
+the definition without starting a paid run:
+
+```powershell
+# Use the intended subscription in the active Azure CLI profile as well.
+az load test create `
+  --subscription $SUBSCRIPTION_ID `
+  --load-test-resource $ALT_RESOURCE --resource-group $RG `
+  --test-id contoso-bank-secrets-kv-locust `
+  --load-test-config-file .\loadtests\config\secrets-demo-locust.yaml
+```
+
+For an explicitly authorized **paid presentation run**, first confirm that the
+vault contains a disposable value, then enable plaintext logging for the run:
+
+```powershell
+$runId = "kv-locust-demo-" + [DateTime]::UtcNow.ToString("yyyyMMdd-HHmmss")
+az load test-run create `
+  --subscription $SUBSCRIPTION_ID `
+  --load-test-resource $ALT_RESOURCE --resource-group $RG `
+  --test-id contoso-bank-secrets-kv-locust --test-run-id $runId `
+  --env DEMO_LOG_SECRET=true --no-wait --output none
+if ($LASTEXITCODE -ne 0) { throw "Demo run creation failed." }
+
+# Load extension 2.1.0 also persists the run's --env override on the saved test.
+az load test update `
+  --subscription $SUBSCRIPTION_ID `
+  --load-test-resource $ALT_RESOURCE --resource-group $RG `
+  --test-id contoso-bank-secrets-kv-locust `
+  --env DEMO_LOG_SECRET=false --output none
+if ($LASTEXITCODE -ne 0) { throw "Could not restore safe logging defaults." }
+```
+
+Verify the run retains `environmentVariables.DEMO_LOG_SECRET: "true"` while the
+saved test has `"false"`. In **Download -> Logs**, `engine1_worker.log` contains
+one `DEMO ONLY: retrieved API_KEY=...` line and one resolution check per user.
+Restoring the default does not remove plaintext from that run's existing logs.
+
+The provisioning hooks and one-command runners discover this YAML automatically.
+The GitHub Actions `test_id` selector also accepts `contoso-bank-secrets-kv-locust`;
+for this test it deliberately supplies no GitHub secret override, preserving the
+Key Vault reference instead of substituting `DEMO_API_KEY`.
+
+For an optional local run against your own API on port 8000, install the separate
+Locust requirements and supply a secret through the environment. This example
+fetches it using **your CLI identity**, which needs its own vault data-plane
+access; it does not exercise Azure Load Testing's managed identity:
+
+```powershell
+python -m pip install -r .\loadtests\locust\requirements.txt
+$env:API_KEY = az keyvault secret show --vault-name "<vault-name>" `
+  --name demo-api-key --query value --output tsv
+if ($LASTEXITCODE -ne 0) { throw "Key Vault secret retrieval failed." }
+$env:DEMO_LOG_SECRET = "false"
+try {
+  python -m locust -f .\loadtests\locust\secrets_locustfile.py `
+    --config .\loadtests\locust\secrets.conf --host http://127.0.0.1:8000 `
+    --users 1 --spawn-rate 1 --run-time 10s
+} finally {
+  Remove-Item Env:\API_KEY
+}
+```
+
+Run the offline regression suite with
+`python -m unittest discover -s tests -p test_keyvault_secrets_locust.py`. It needs Locust
+and the existing PyYAML development dependency, uses only a loopback fixture and
+synthetic credentials, and includes bounded one-user success and missing-secret
+CLI runs. It never reads Azure secrets or starts an Azure run.
+
+References: [Locust secrets as environment variables](https://learn.microsoft.com/azure/app-testing/load-testing/how-to-parameterize-load-tests#use-secrets-in-test-script),
+[Azure Locust engine/load semantics](https://learn.microsoft.com/azure/app-testing/load-testing/how-to-high-scale-load#configure-load-parameters-for-locust-based-tests),
+and [Locust script and configuration upload](https://learn.microsoft.com/azure/app-testing/load-testing/quickstart-create-run-load-test-with-locust#create-a-load-test).
 
 ---
 

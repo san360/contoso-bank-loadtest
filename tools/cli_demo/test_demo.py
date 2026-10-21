@@ -16,15 +16,17 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.cli_demo.commands import (
-    ACTIONS, ROOT, Config, build_commands, csv_export, metric_rows, redact, run_verdict, script_for,
-    shell_command, tsv_export,
+    ACTIONS, INSIGHTS_API_VERSION, ROOT, TEST_LIST_COLUMNS, Config, build_commands, csv_export, metric_rows,
+    parse_test_list_tsv, redact, render_test_config, run_verdict, script_for, shell_command, tsv_export,
 )
 from tools.cli_demo.server import App, CliRunner, DemoServer, azure_launcher, main
 
 SUBSCRIPTION = "00000000-0000-0000-0000-000000000001"
 RESOURCE = f"/subscriptions/{SUBSCRIPTION}/resourceGroups/demo-rg/providers/Microsoft.Web/sites/demo-app"
+LOAD_ENDPOINT = "https://00000000-0000-0000-0000-000000000099.eastus.cnt-prod.loadtesting.azure.com"
 CONFIG = Config(
     subscription=SUBSCRIPTION, resourceGroup="demo-rg", loadTestResource="demo-load",
+    loadTestEndpoint=LOAD_ENDPOINT,
     testId="cli-demo-smoke", runId="cli-unit-test", targetUrl="https://example.invalid/health?a=1&b=2",
     serverResourceId=RESOURCE, serverResourceName="demo-app", serverResourceType="Microsoft.Web/sites",
     serverResourceKind="app", serverMetric="CpuTime",
@@ -51,9 +53,35 @@ ALL_CLIENT_METRICS = {
     "TotalRequests": [{"data": [{"timestamp": CONFIG.startTime, "value": 20}]}],
     "Errors": [{"data": []}],
 }
+TEST_DEFINITIONS = [
+    {"testId": CONFIG.testId, "displayName": 'Smoke "test"', "testType": "JMX",
+     "loadTestConfiguration": {"engineInstances": 1}},
+    {"testId": "url-test", "displayName": "URL health check", "testType": "URL",
+     "loadTestConfiguration": {"engineInstances": 2}},
+]
+AI_INSIGHTS = {
+    "status": "Succeeded", "version": 2,
+    "columns": [{"name": name, "dataType": "String"} for name in
+                ("Insight", "Details", "Title", "Summary", "Recommendation", "WorkItemUrl")],
+    "rows": {
+        "finding-1": {
+            "Title": "Synthetic latency finding",
+            "Insight": "Response times increased during the demonstration's peak load bucket.",
+            "Details": "Synthetic fixture data, not measurements from an Azure run.",
+            "Recommendation": "Review the supporting server metrics before changing capacity.",
+            "WorkItemUrl": "https://example.invalid/work-items/42",
+            "AdditionalContext": "",
+        },
+        "summary": {"Summary": "Synthetic summary of a completed demonstration run."},
+    },
+}
 
 
 def fake_runner(command):
+    if command.artifact == "tests.tsv":
+        return subprocess.CompletedProcess(command.args, 0,
+                                           'cli-demo-smoke\tSmoke "test"\tJMX\t1\n'
+                                           'url-test\tURL health check\tURL\t2\n', "")
     if command.download:
         directory = Path(command.args[command.args.index("--path") + 1])
         directory.mkdir(parents=True, exist_ok=True)
@@ -70,6 +98,12 @@ def fake_runner(command):
         data = CLIENT_DEFINITIONS
     elif command.artifact == "all-client-metrics.json":
         data = ALL_CLIENT_METRICS
+    elif command.artifact == "tests.json":
+        data = TEST_DEFINITIONS
+    elif command.artifact == "load-resource.json":
+        data = {"id": CONFIG.load_resource_id(), "dataPlaneURI": LOAD_ENDPOINT.removeprefix("https://")}
+    elif command.artifact == "ai-insights.json":
+        data = AI_INSIGHTS
     elif command.metric:
         data = [{"data": [{"timestamp": "2026-10-19T10:00:00Z", "value": 10}]}]
     else:
@@ -112,6 +146,40 @@ class CommandTests(unittest.TestCase):
         for value in ({"runId": ["not", "a", "string"]}, {"resourceGroup": "rg\nbad"}):
             with self.assertRaises(ValueError):
                 Config.parse(value)
+
+    def test_test_list_output_defaults_to_json_and_only_allows_json_or_tsv(self):
+        self.assertEqual(Config.parse({}).testListOutput, "json")
+        self.assertEqual(Config.parse({"testListOutput": "tsv"}).testListOutput, "tsv")
+        for output in ("yaml", "table", "", "--help"):
+            with self.subTest(output=output), self.assertRaises(ValueError):
+                Config.parse({"testListOutput": output})
+            with self.subTest(output=output), self.assertRaises(ValueError):
+                build_commands("list-tests", replace(CONFIG, testListOutput=output), Path("output"))
+
+    def test_list_tests_output_matches_the_preview_and_exported_script(self):
+        for output in ("json", "tsv"):
+            with self.subTest(output=output):
+                commands = build_commands("list-tests", replace(CONFIG, testListOutput=output), Path("output"))
+                command = commands[0]
+                self.assertEqual(command.args[command.args.index("--output") + 1], output)
+                self.assertEqual(command.artifact, f"tests.{output}")
+                for shell in ("powershell", "bash"):
+                    self.assertIn(f"--output {output}", command.public()[shell])
+                    self.assertIn(f"--output {output}", script_for(commands, shell))
+                if output == "tsv":
+                    self.assertEqual(command.args[command.args.index("--query") + 1],
+                                     "[].[testId,displayName,testType,loadTestConfiguration.engineInstances]")
+                else:
+                    self.assertNotIn("--query", command.args)
+
+    def test_tsv_selection_does_not_change_other_commands_json_output(self):
+        config = replace(CONFIG, testListOutput="tsv")
+        for action in ACTIONS:
+            if action.id == "list-tests":
+                continue
+            for command in build_commands(action.id, config, Path("output")):
+                with self.subTest(action=action.id):
+                    self.assertEqual(command.args[command.args.index("--output") + 1], "json")
 
     def test_explicit_scoping_and_no_global_subscription_switch(self):
         commands = build_commands("run-test", CONFIG, Path("output"))
@@ -161,6 +229,14 @@ class CommandTests(unittest.TestCase):
             args = build_commands("create-test", CONFIG, directory)[0].args
             self.assertEqual(Path(args[args.index("--load-test-config-file") + 1]), directory / "smoke.yaml")
         self.assertNotIn("--test-plan", args)
+
+    def test_bash_create_preview_uses_shell_appropriate_path_separators(self):
+        import shlex
+        directory = ROOT / ".loadtest-demo" / "artifacts" / ("a" * 32)
+        command = build_commands("create-test", CONFIG, directory)[0]
+        tokens = shlex.split(command.public()["bash"])
+        self.assertEqual(tokens[tokens.index("--load-test-config-file") + 1],
+                         (directory.relative_to(ROOT) / "smoke.yaml").as_posix())
 
     def test_target_rejects_credentials_and_localhost(self):
         for target in ("file:///tmp/test", "https://user:pass@example.invalid/",
@@ -256,7 +332,61 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0][1:3], ["account", "set"])
 
 
+class TestConfigTests(unittest.TestCase):
+    def test_generated_yaml_uses_the_same_authorized_target_as_cli_arguments(self):
+        template = (ROOT / "loadtests" / "cli-demo" / "smoke.yaml").read_text(encoding="utf-8")
+        for target in ("https://authorized.example:8443/ready?enabled=true&code=a%3Db",
+                       "http://authorized.example", "https://authorized.example/health?filter=a:b"):
+            with self.subTest(target=target):
+                config = replace(CONFIG, targetUrl=target)
+                content = render_test_config(template, config)
+                args = build_commands("create-test", config, Path("output"))[0].args
+                assignments = args[args.index("--env") + 1:args.index("--subscription")]
+                lines = content.splitlines()
+                for assignment in assignments:
+                    name, expected = assignment.split("=", 1)
+                    index = lines.index(f"  - name: {name}")
+                    self.assertEqual(json.loads(lines[index + 1].split("value:", 1)[1]), expected)
+                self.assertNotIn("example.invalid", content)
+                self.assertIn("testPlan: smoke.jmx", content)
+                self.assertNotIn("--load-test-config-file .\\loadtests", content)
+
+    def test_generated_yaml_requires_each_target_variable_exactly_once(self):
+        template = (ROOT / "loadtests" / "cli-demo" / "smoke.yaml").read_text(encoding="utf-8")
+        for name in ("DEMO_HOST", "DEMO_PROTOCOL", "DEMO_PORT", "DEMO_PATH"):
+            for content in (template.replace(f"  - name: {name}", f"  - name: OTHER_{name}"),
+                            template + f"  - name: {name}\n    value: duplicate\n"):
+                with self.subTest(name=name), self.assertRaisesRegex(ValueError, f"exactly one.*{name}"):
+                    render_test_config(content, CONFIG)
+
+
 class ExportTests(unittest.TestCase):
+    def test_test_list_tsv_keeps_column_order_quotes_unicode_and_zero(self):
+        text = 'id\tA "quoted" caf\u00e9\tJMX\t0\r\nempty\t\tURL\t1\r\n'
+        table, exported = parse_test_list_tsv(text)
+        self.assertEqual(table["headers"], list(TEST_LIST_COLUMNS))
+        self.assertEqual(table["rows"], [["id", 'A "quoted" caf\u00e9', "JMX", "0"],
+                                         ["empty", "", "URL", "1"]])
+        self.assertEqual(list(csv.reader(io.StringIO(exported), delimiter="\t")),
+                         [list(TEST_LIST_COLUMNS), *table["rows"]])
+
+    def test_test_list_tsv_has_a_header_even_when_no_definitions_exist(self):
+        table, exported = parse_test_list_tsv("")
+        self.assertEqual(table["rows"], [])
+        self.assertEqual(list(csv.reader(io.StringIO(exported), delimiter="\t")), [list(TEST_LIST_COLUMNS)])
+
+    def test_test_list_tsv_rejects_misaligned_rows(self):
+        for text in ("id\tName\tJMX\n", "id\tName\twith tab\tJMX\t1\n", "id\tName\nnext\tJMX\t1\n"):
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, "unexpected TSV columns"):
+                parse_test_list_tsv(text)
+        with self.assertRaisesRegex(ValueError, "Could not read.*TSV"):
+            parse_test_list_tsv("id\t" + "x" * 140000 + "\tJMX\t1\n")
+
+    def test_test_list_tsv_neutralizes_spreadsheet_formulas_without_altering_the_table(self):
+        table, exported = parse_test_list_tsv("id\t=HYPERLINK()\tJMX\t1\n")
+        self.assertEqual(table["rows"][0][1], "=HYPERLINK()")
+        self.assertEqual(list(csv.reader(io.StringIO(exported), delimiter="\t"))[1][1], "'=HYPERLINK()")
+
     def test_tsv_has_the_same_columns_values_and_units_as_csv(self):
         kwargs = {"namespace": "LoadTestRunMetrics", "definitions": CLIENT_DEFINITIONS}
         csv_rows = list(csv.DictReader(io.StringIO(csv_export(ALL_CLIENT_METRICS, **kwargs))))
@@ -400,10 +530,10 @@ class PortableScriptTests(unittest.TestCase):
         for name in ("smoke.yaml", "smoke.jmx"):
             shutil.copyfile(ROOT / "loadtests" / "cli-demo" / name, sources / name)
         self.original_directory = Path(self.temp.name) / "copilot-session" / "artifacts" / ("a" * 32)
-        self.config = replace(CONFIG, testId="portable-customer-test")
+        self.config = replace(CONFIG, testId="portable-customer-test",
+                              targetUrl="https://authorized.example:8443/ready?a=1&b=2")
         self.commands = build_commands("create-test", self.config, self.original_directory)
-        content = (sources / "smoke.yaml").read_text(encoding="utf-8").replace(
-            "testId: cli-demo-smoke", 'testId: "portable-customer-test"')
+        content = render_test_config((sources / "smoke.yaml").read_text(encoding="utf-8"), self.config)
         self.test_config = {"path": str(self.original_directory / "smoke.yaml"), "content": content}
 
     def tearDown(self):
@@ -417,6 +547,10 @@ class PortableScriptTests(unittest.TestCase):
                 self.assertNotIn(str(ROOT), script)
                 self.assertIn('testId: "portable-customer-test"', script)
                 self.assertIn("--test-id portable-customer-test", script)
+                self.assertIn('value: "authorized.example"', script)
+                self.assertIn('value: "8443"', script)
+                self.assertIn('value: "/ready?a=1&b=2"', script)
+                self.assertIn("DEMO_HOST=authorized.example", script)
                 self.assertIn("Run this script from the repository root", script)
                 self.assertIn("smoke.jmx", script)
 
@@ -512,6 +646,28 @@ class JobTests(unittest.TestCase):
                         self.app.preview("create-test", asdict(CONFIG))
         self.assertEqual(self.app.jobs, {})
 
+    def test_create_previews_freeze_authorized_targets_in_the_generated_yaml(self):
+        template = ROOT / "loadtests" / "cli-demo" / "smoke.yaml"
+        original = template.read_bytes()
+        first = self.app.preview("create-test", asdict(replace(
+            CONFIG, targetUrl="https://first.authorized.example:8443/ready?q=a&b=2")))
+        second = self.app.preview("create-test", asdict(replace(
+            CONFIG, targetUrl="http://second.authorized.example/status")))
+        self.assertNotEqual(first["testConfig"]["path"], second["testConfig"]["path"])
+        for preview, host, protocol, port, path in (
+            (first, "first.authorized.example", "https", "8443", "/ready?q=a&b=2"),
+            (second, "second.authorized.example", "http", "80", "/status"),
+        ):
+            content = preview["testConfig"]["content"]
+            self.assertEqual(Path(preview["testConfig"]["path"]).read_text(encoding="utf-8"), content)
+            self.assertEqual(preview["testConfig"]["sourcePath"], str(template.relative_to(ROOT)))
+            args = preview["commands"][0]["argv"]
+            for name, value in (("DEMO_HOST", host), ("DEMO_PROTOCOL", protocol),
+                                ("DEMO_PORT", port), ("DEMO_PATH", path)):
+                self.assertIn(f"{name}={value}", args)
+                self.assertIn(f"  - name: {name}\n    value: {json.dumps(value)}", content)
+        self.assertEqual(template.read_bytes(), original)
+
     def test_default_create_preview_writes_relative_inputs_in_the_checkout(self):
         with tempfile.TemporaryDirectory() as root:
             checkout = Path(root).resolve()
@@ -527,11 +683,60 @@ class JobTests(unittest.TestCase):
                 config_path = Path(args[args.index("--load-test-config-file") + 1])
                 self.assertFalse(config_path.is_absolute())
                 self.assertEqual(preview["testConfig"]["path"], str(config_path))
+                self.assertEqual(preview["testConfig"]["sourcePath"], str(Path("loadtests") / "cli-demo" / "smoke.yaml"))
                 self.assertEqual((checkout / config_path).read_text(encoding="utf-8"),
                                  preview["testConfig"]["content"])
                 self.assertTrue((checkout / config_path.with_suffix(".jmx")).is_file())
             finally:
                 app.close()
+
+    def test_json_test_list_job_retains_structured_data_for_the_json_viewer(self):
+        preview = self.app.preview("list-tests", asdict(CONFIG))
+        self.app.start(preview["id"], False)
+        job = wait_job(self.app, preview["id"])
+        self.assertEqual(job["state"], "succeeded", job["error"])
+        entry = job["commands"][0]
+        self.assertEqual(entry["format"], "json")
+        self.assertEqual(entry["data"], TEST_DEFINITIONS)
+        self.assertEqual(json.loads(entry["stdout"]), TEST_DEFINITIONS)
+
+    def test_tsv_test_list_job_persists_a_headered_download_and_readable_columns(self):
+        preview = self.app.preview("list-tests", asdict(replace(CONFIG, testListOutput="tsv")))
+        self.app.start(preview["id"], False)
+        job = wait_job(self.app, preview["id"])
+        self.assertEqual(job["state"], "succeeded", job["error"])
+        entry = job["commands"][0]
+        self.assertEqual(entry["table"]["headers"], list(TEST_LIST_COLUMNS))
+        self.assertEqual(entry["table"]["rows"][0], ["cli-demo-smoke", 'Smoke "test"', "JMX", "1"])
+        content = (Path(job["artifactDirectory"]) / "tests.tsv").read_bytes()
+        self.assertNotIn(b"\r\r\n", content)
+        self.assertEqual(list(csv.reader(io.StringIO(content.decode("utf-8")), delimiter="\t")),
+                         [list(TEST_LIST_COLUMNS), *entry["table"]["rows"]])
+        reopened = App(Path(self.temp.name), fake_runner)
+        try:
+            self.assertEqual(reopened.job(job["id"])["commands"][0]["table"], entry["table"])
+        finally:
+            reopened.close()
+
+    def test_malformed_tsv_fails_explicitly_and_keeps_raw_stdout(self):
+        with patch.object(self.app, "runner", return_value=subprocess.CompletedProcess(
+            [], 0, "id\ttoo\tmany\tcolumns\tJMX\t1\n", "")):
+            preview = self.app.preview("list-tests", asdict(replace(CONFIG, testListOutput="tsv")))
+            self.app.start(preview["id"], False)
+            job = wait_job(self.app, preview["id"])
+        self.assertEqual(job["state"], "failed")
+        self.assertIn("unexpected TSV columns", job["error"])
+        self.assertIn("too\tmany", job["commands"][0]["stdout"])
+        self.assertNotIn("table", job["commands"][0])
+
+    def test_invalid_json_does_not_publish_a_success_shaped_json_preview(self):
+        with patch.object(self.app, "runner", return_value=subprocess.CompletedProcess([], 0, "not JSON", "")):
+            preview = self.app.preview("list-tests", asdict(CONFIG))
+            self.app.start(preview["id"], False)
+            job = wait_job(self.app, preview["id"])
+        self.assertEqual(job["state"], "failed")
+        self.assertIn("non-JSON", job["error"])
+        self.assertNotIn("format", job["commands"][0])
 
     def test_all_client_metric_job_persists_raw_empty_series_and_labeled_exports(self):
         preview = self.app.preview("all-client-metrics", asdict(CONFIG))
@@ -776,6 +981,16 @@ class HttpTests(unittest.TestCase):
         self.assertIn(b'href="https://learn.microsoft.com/en-us/azure/app-testing/load-testing/reference-test-config-yaml"', data)
         self.assertIn("SameSite=Strict", headers["Set-Cookie"])
         self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
+        self.assertIn(b'id="test-list-output" data-config="testListOutput"', data)
+        self.assertIn(b'<option value="tsv">TSV - readable columns</option>', data)
+        self.assertIn(b'<div id="output"', data)
+        self.assertIn(b'id="yaml-source-path"', data)
+        self.assertIn(b'id="demo-disclaimer"', data)
+        self.assertIn(b"not an official Microsoft Azure offering", data)
+        self.assertIn(b"not provided or supported by Microsoft", data)
+        self.assertIn(b"not intended for production use", data)
+        self.assertIn(b'data-tab="insights"', data)
+        self.assertIn(b'id="actions-insights"', data)
 
     def test_api_requires_local_session(self):
         status, _, _ = self.request("/api/bootstrap", authenticated=False)
@@ -813,7 +1028,8 @@ class HttpTests(unittest.TestCase):
         config_file = Path(args[args.index("--load-test-config-file") + 1])
         self.assertEqual(config_file, Path(preview["artifactDirectory"]) / "smoke.yaml")
         self.assertEqual(preview["testConfig"], {
-            "path": str(config_file), "content": config_file.read_text(encoding="utf-8"),
+            "path": str(config_file), "sourcePath": str(Path("loadtests") / "cli-demo" / "smoke.yaml"),
+            "content": config_file.read_text(encoding="utf-8"),
         })
         self.assertIn(f'testId: "{test_id}"', preview["testConfig"]["content"])
         self.assertIn("testPlan: smoke.jmx", preview["testConfig"]["content"])
@@ -842,6 +1058,70 @@ class HttpTests(unittest.TestCase):
             status, _, body = self.request("/api/preview", {"action": "create-test", "config": asdict(CONFIG)})
         self.assertEqual(status, 400, body)
         self.assertIn("Could not prepare the demo YAML", json.loads(body)["error"])
+
+    def test_list_test_tsv_preview_execution_and_download_match_the_selected_format(self):
+        status, _, body = self.request("/api/preview", {
+            "action": "list-tests", "config": asdict(replace(CONFIG, testListOutput="tsv")),
+        })
+        self.assertEqual(status, 200, body)
+        preview = json.loads(body)
+        args = preview["commands"][0]["argv"]
+        self.assertEqual(args[args.index("--output") + 1], "tsv")
+        self.assertEqual(self.request("/api/jobs", {"planId": preview["id"]})[0], 202)
+        job = wait_job(self.app, preview["id"])
+        file = next(item for item in job["files"] if item["name"] == "tests.tsv")
+        status, headers, body = self.request(file["url"])
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "text/tab-separated-values; charset=utf-8")
+        rows = list(csv.reader(io.StringIO(body.decode("utf-8")), delimiter="\t"))
+        self.assertEqual(rows, [list(TEST_LIST_COLUMNS), *job["commands"][0]["table"]["rows"]])
+
+    def test_invalid_test_list_output_is_rejected(self):
+        status, _, body = self.request("/api/preview", {
+            "action": "list-tests", "config": asdict(replace(CONFIG, testListOutput="table")),
+        })
+        self.assertEqual(status, 400, body)
+        self.assertIn("Choose json or tsv", json.loads(body)["error"])
+
+    def test_insights_requires_endpoint_resolution_and_exports_the_real_json_response(self):
+        status, _, body = self.request("/api/preview", {
+            "action": "ai-insights", "config": asdict(replace(CONFIG, loadTestEndpoint="")),
+        })
+        self.assertEqual(status, 400, body)
+        self.assertIn("Resolve", json.loads(body)["error"])
+        status, _, body = self.request("/api/preview", {
+            "action": "resolve-load-endpoint", "config": asdict(CONFIG),
+        })
+        self.assertEqual(status, 200, body)
+        resolve = json.loads(body)
+        self.assertEqual(self.request("/api/jobs", {"planId": resolve["id"]})[0], 202)
+        self.assertEqual(wait_job(self.app, resolve["id"])["state"], "succeeded")
+        status, _, body = self.request("/api/preview", {"action": "ai-insights", "config": asdict(CONFIG)})
+        self.assertEqual(status, 200, body)
+        preview = json.loads(body)
+        self.assertEqual(preview["confirmation"], "")
+        self.assertEqual(self.request("/api/jobs", {"planId": preview["id"]})[0], 202)
+        job = wait_job(self.app, preview["id"])
+        self.assertEqual(job["state"], "succeeded", job["error"])
+        self.assertEqual(job["commands"][-1]["insights"]["status"], "Succeeded")
+        file = next(item for item in job["files"] if item["name"] == "ai-insights.json")
+        status, headers, body = self.request(file["url"])
+        self.assertEqual(status, 200)
+        self.assertTrue(headers["Content-Type"].startswith("application/json"))
+        self.assertEqual(json.loads(body), AI_INSIGHTS)
+        status, _, script = self.request(f"/api/plans/{preview['id']}/script?shell=powershell")
+        self.assertEqual(status, 200)
+        self.assertIn(b"az rest --method get", script)
+        self.assertIn(f"api-version={INSIGHTS_API_VERSION}".encode("ascii"), script)
+        self.assertNotIn(b"Authorization", script)
+        self.assertNotIn(b"insights:generate", script)
+
+    def test_bootstrap_advertises_the_pinned_insights_contract(self):
+        status, _, body = self.request("/api/bootstrap")
+        self.assertEqual(status, 200)
+        bootstrap = json.loads(body)
+        self.assertEqual(bootstrap["insightsApiVersion"], INSIGHTS_API_VERSION)
+        self.assertEqual(bootstrap["defaults"]["loadTestEndpoint"], "")
 
     def test_tsv_download_is_a_headered_utf8_attachment(self):
         status, _, body = self.request("/api/preview", {"action": "all-client-metrics", "config": asdict(CONFIG)})
