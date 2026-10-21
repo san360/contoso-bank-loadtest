@@ -1,0 +1,6 @@
+subscription_id       = "00000000-0000-0000-0000-000000000000"
+tenant_id             = "00000000-0000-0000-0000-000000000000"
+demo_name             = "my-sql-demo"
+location              = "swedencentral"
+load_test_resource_id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/EXISTING-RG/providers/Microsoft.LoadTestService/loadTests/EXISTING-ALT"
+entra_admin_object_id = "00000000-0000-0000-0000-000000000000"
