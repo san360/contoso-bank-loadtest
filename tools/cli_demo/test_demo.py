@@ -16,15 +16,17 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.cli_demo.commands import (
-    ACTIONS, ROOT, TEST_LIST_COLUMNS, Config, build_commands, csv_export, metric_rows,
+    ACTIONS, INSIGHTS_API_VERSION, ROOT, TEST_LIST_COLUMNS, Config, build_commands, csv_export, metric_rows,
     parse_test_list_tsv, redact, render_test_config, run_verdict, script_for, shell_command, tsv_export,
 )
 from tools.cli_demo.server import App, CliRunner, DemoServer, azure_launcher, main
 
 SUBSCRIPTION = "00000000-0000-0000-0000-000000000001"
 RESOURCE = f"/subscriptions/{SUBSCRIPTION}/resourceGroups/demo-rg/providers/Microsoft.Web/sites/demo-app"
+LOAD_ENDPOINT = "https://00000000-0000-0000-0000-000000000099.eastus.cnt-prod.loadtesting.azure.com"
 CONFIG = Config(
     subscription=SUBSCRIPTION, resourceGroup="demo-rg", loadTestResource="demo-load",
+    loadTestEndpoint=LOAD_ENDPOINT,
     testId="cli-demo-smoke", runId="cli-unit-test", targetUrl="https://example.invalid/health?a=1&b=2",
     serverResourceId=RESOURCE, serverResourceName="demo-app", serverResourceType="Microsoft.Web/sites",
     serverResourceKind="app", serverMetric="CpuTime",
@@ -57,6 +59,22 @@ TEST_DEFINITIONS = [
     {"testId": "url-test", "displayName": "URL health check", "testType": "URL",
      "loadTestConfiguration": {"engineInstances": 2}},
 ]
+AI_INSIGHTS = {
+    "status": "Succeeded", "version": 2,
+    "columns": [{"name": name, "dataType": "String"} for name in
+                ("Insight", "Details", "Title", "Summary", "Recommendation", "WorkItemUrl")],
+    "rows": {
+        "finding-1": {
+            "Title": "Synthetic latency finding",
+            "Insight": "Response times increased during the demonstration's peak load bucket.",
+            "Details": "Synthetic fixture data, not measurements from an Azure run.",
+            "Recommendation": "Review the supporting server metrics before changing capacity.",
+            "WorkItemUrl": "https://example.invalid/work-items/42",
+            "AdditionalContext": "",
+        },
+        "summary": {"Summary": "Synthetic summary of a completed demonstration run."},
+    },
+}
 
 
 def fake_runner(command):
@@ -82,6 +100,10 @@ def fake_runner(command):
         data = ALL_CLIENT_METRICS
     elif command.artifact == "tests.json":
         data = TEST_DEFINITIONS
+    elif command.artifact == "load-resource.json":
+        data = {"id": CONFIG.load_resource_id(), "dataPlaneURI": LOAD_ENDPOINT.removeprefix("https://")}
+    elif command.artifact == "ai-insights.json":
+        data = AI_INSIGHTS
     elif command.metric:
         data = [{"data": [{"timestamp": "2026-10-19T10:00:00Z", "value": 10}]}]
     else:
@@ -963,6 +985,12 @@ class HttpTests(unittest.TestCase):
         self.assertIn(b'<option value="tsv">TSV - readable columns</option>', data)
         self.assertIn(b'<div id="output"', data)
         self.assertIn(b'id="yaml-source-path"', data)
+        self.assertIn(b'id="demo-disclaimer"', data)
+        self.assertIn(b"not an official Microsoft Azure offering", data)
+        self.assertIn(b"not provided or supported by Microsoft", data)
+        self.assertIn(b"not intended for production use", data)
+        self.assertIn(b'data-tab="insights"', data)
+        self.assertIn(b'id="actions-insights"', data)
 
     def test_api_requires_local_session(self):
         status, _, _ = self.request("/api/bootstrap", authenticated=False)
@@ -1054,6 +1082,46 @@ class HttpTests(unittest.TestCase):
         })
         self.assertEqual(status, 400, body)
         self.assertIn("Choose json or tsv", json.loads(body)["error"])
+
+    def test_insights_requires_endpoint_resolution_and_exports_the_real_json_response(self):
+        status, _, body = self.request("/api/preview", {
+            "action": "ai-insights", "config": asdict(replace(CONFIG, loadTestEndpoint="")),
+        })
+        self.assertEqual(status, 400, body)
+        self.assertIn("Resolve", json.loads(body)["error"])
+        status, _, body = self.request("/api/preview", {
+            "action": "resolve-load-endpoint", "config": asdict(CONFIG),
+        })
+        self.assertEqual(status, 200, body)
+        resolve = json.loads(body)
+        self.assertEqual(self.request("/api/jobs", {"planId": resolve["id"]})[0], 202)
+        self.assertEqual(wait_job(self.app, resolve["id"])["state"], "succeeded")
+        status, _, body = self.request("/api/preview", {"action": "ai-insights", "config": asdict(CONFIG)})
+        self.assertEqual(status, 200, body)
+        preview = json.loads(body)
+        self.assertEqual(preview["confirmation"], "")
+        self.assertEqual(self.request("/api/jobs", {"planId": preview["id"]})[0], 202)
+        job = wait_job(self.app, preview["id"])
+        self.assertEqual(job["state"], "succeeded", job["error"])
+        self.assertEqual(job["commands"][-1]["insights"]["status"], "Succeeded")
+        file = next(item for item in job["files"] if item["name"] == "ai-insights.json")
+        status, headers, body = self.request(file["url"])
+        self.assertEqual(status, 200)
+        self.assertTrue(headers["Content-Type"].startswith("application/json"))
+        self.assertEqual(json.loads(body), AI_INSIGHTS)
+        status, _, script = self.request(f"/api/plans/{preview['id']}/script?shell=powershell")
+        self.assertEqual(status, 200)
+        self.assertIn(b"az rest --method get", script)
+        self.assertIn(f"api-version={INSIGHTS_API_VERSION}".encode("ascii"), script)
+        self.assertNotIn(b"Authorization", script)
+        self.assertNotIn(b"insights:generate", script)
+
+    def test_bootstrap_advertises_the_pinned_insights_contract(self):
+        status, _, body = self.request("/api/bootstrap")
+        self.assertEqual(status, 200)
+        bootstrap = json.loads(body)
+        self.assertEqual(bootstrap["insightsApiVersion"], INSIGHTS_API_VERSION)
+        self.assertEqual(bootstrap["defaults"]["loadTestEndpoint"], "")
 
     def test_tsv_download_is_a_headered_utf8_attachment(self):
         status, _, body = self.request("/api/preview", {"action": "all-client-metrics", "config": asdict(CONFIG)})

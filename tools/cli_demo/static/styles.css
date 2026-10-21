@@ -21,6 +21,9 @@ a { color:var(--blue); }
 .topbar p { color:var(--muted); margin:0; font-size:13px; }
 .brand-mark { display:grid; place-items:center; width:42px; height:42px; border-radius:10px; background:var(--blue); color:white; font:700 20px Consolas,monospace; }
 .local-badge { margin-left:auto; font-size:10px; font-weight:700; letter-spacing:1px; color:#276144; background:#e8f5ec; padding:6px 10px; border-radius:5px; }
+.demo-disclaimer { margin:16px 28px 0; padding:14px 18px; border:1px solid #e3cb8c; border-left:4px solid #ad7715; border-radius:7px; background:#fff8e7; color:#62450f; }
+.demo-disclaimer strong { display:block; margin-bottom:4px; }
+.demo-disclaimer p { margin:0; font-size:13px; }
 .layout { display:grid; grid-template-columns:310px minmax(0,1fr); gap:24px; max-width:1480px; margin:24px auto; padding:0 28px; align-items:start; }
 .panel { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:22px; }
 .configuration { padding:20px; }
@@ -103,6 +106,14 @@ th { color:var(--muted); background:#f7f9fc; position:sticky; top:0; }
 .client-metric-card .metric-unit { font-size:12px; font-weight:400; color:var(--muted); margin-left:7px; }
 .client-metric-card .metric-empty { padding:22px 0; color:var(--muted); }
 .client-metric-card .metric-sparkline { height:100px; }
+.insights-cards { display:grid; gap:14px; margin-top:16px; }
+.insight-card { border:1px solid var(--line); border-radius:8px; padding:16px; min-width:0; }
+.insight-card.summary-card { border-color:#bfd3ee; background:#f5f9ff; }
+.insight-card dl { margin:0; }
+.insight-card dt { font-weight:600; font-size:12px; margin-top:12px; }
+.insight-card dd { margin:4px 0 0; white-space:pre-wrap; overflow-wrap:anywhere; }
+#insights-state { white-space:pre-wrap; overflow-wrap:anywhere; }
+#insights-result > .section-heading { flex-wrap:wrap; }
 .file-list { display:flex; gap:8px; flex-wrap:wrap; margin:12px 0; }
 .file-link { display:inline-block; text-decoration:none; border:1px solid var(--line); border-radius:5px; padding:6px 9px; background:white; font-size:12px; overflow-wrap:anywhere; }
 .bundle-link { border-color:#9abbe9; background:#edf4ff; font-weight:600; }

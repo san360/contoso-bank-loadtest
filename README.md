@@ -92,6 +92,16 @@ PowerShell/Bash command, or download the step script for a terminal demo.
 expandable, type-colored viewer with **Copy JSON**; TSV results appear as readable
 columns with a headered download and **Copy TSV**. Raw CLI output remains available.
 
+The **AI insights** tab reads existing Azure-generated summaries, evidence and
+recommendations for a completed run through the Load Testing REST API. Resolve
+the resource endpoint first, then fetch the selected run's insights. Generation
+status is shown separately from the test verdict, and the response is available
+as expandable JSON and a download. The app does not generate insights automatically.
+
+A permanent banner identifies the CLI lab as an **independently developed,
+unofficial demonstration application**, not an offering provided or supported
+by Microsoft and not intended for production use.
+
 `az account set` changes the current CLI profile. For a dedicated demo profile,
 follow the `AZURE_CONFIG_DIR` setup in [doc 26](./docs/26-cli-demo-app-and-skills.md#different-tenants-and-cli-subscription-context).
 If port 8769 is occupied, use `python -m tools.cli_demo --port 8766` and open

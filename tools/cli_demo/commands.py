@@ -22,6 +22,8 @@ SECRET_KEY = re.compile(
     r"connection[-_]?string|^sig$|^sas$)"
 )
 TEST_LIST_COLUMNS = ("Test ID", "Display name", "Type", "Engines")
+INSIGHTS_API_VERSION = "2026-04-01"
+LOAD_TEST_AUDIENCE = "https://cnt-prod.loadtesting.azure.com"
 
 
 @dataclass(frozen=True)
@@ -86,6 +88,10 @@ ACTIONS = (
            "This updates server-metric configuration on the selected test definition."),
     Action("server-metrics", "Get server metric values", "server",
            "Queries Azure Monitor on the application resource using the run's start and end times."),
+    Action("resolve-load-endpoint", "Resolve Load Testing endpoint", "insights",
+           "Reads the selected resource's data-plane endpoint from Azure Resource Manager. Creates nothing."),
+    Action("ai-insights", "Get latest AI insights", "insights",
+           "Reads existing AI-generated insights for the selected completed run via REST. Does not generate insights or start traffic."),
     Action("download-logs", "Download engine logs", "downloads",
            "Downloads engine log ZIPs. These are different from application/server logs."),
     Action("download-results", "Download request results", "downloads",
@@ -104,6 +110,7 @@ class Config:
     subscription: str = ""
     resourceGroup: str = ""
     loadTestResource: str = ""
+    loadTestEndpoint: str = ""
     testId: str = "cli-demo-smoke"
     runId: str = ""
     targetUrl: str = ""
@@ -145,17 +152,25 @@ class Config:
             if not getattr(self, name):
                 raise ValueError(f"Configure {name} before using this command.")
 
-    def load_scope(self) -> list[str]:
+    def load_resource_id(self) -> str:
         self.require("subscription", "resourceGroup", "loadTestResource")
         if not GUID.fullmatch(self.subscription):
             raise ValueError("Use a subscription GUID, not a display name.")
         for name in ("resourceGroup", "loadTestResource"):
             if not RESOURCE_NAME.fullmatch(getattr(self, name)):
                 raise ValueError(f"{name} contains an invalid resource name.")
-        resource_id = (f"/subscriptions/{self.subscription}/resourceGroups/{self.resourceGroup}"
-                       f"/providers/Microsoft.LoadTestService/loadTests/{self.loadTestResource}")
+        return (f"/subscriptions/{self.subscription}/resourceGroups/{self.resourceGroup}"
+                f"/providers/Microsoft.LoadTestService/loadTests/{self.loadTestResource}")
+
+    def load_scope(self) -> list[str]:
         return ["--subscription", self.subscription, "--resource-group", self.resourceGroup,
-                "--load-test-resource", resource_id]
+                "--load-test-resource", self.load_resource_id()]
+
+    def insights_url(self) -> str:
+        self.run_scope()
+        self.require("loadTestEndpoint")
+        endpoint = load_endpoint(self.loadTestEndpoint)
+        return f"{endpoint}/test-runs/{self.runId}/insights/latest?api-version={INSIGHTS_API_VERSION}"
 
     def test_scope(self) -> list[str]:
         self.require("testId")
@@ -305,6 +320,55 @@ def render_test_config(template: str, config: Config) -> str:
     return content
 
 
+def load_endpoint(value: Any) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError("Azure did not return a Load Testing data-plane endpoint. Resolve the resource again.")
+    if any(ord(char) < 33 for char in value):
+        raise ValueError("The Load Testing endpoint must not contain whitespace or control characters.")
+    try:
+        url = urlsplit(value if "://" in value else "https://" + value)
+        if (url.scheme != "https" or not url.hostname or url.username is not None or url.password is not None
+                or url.port is not None or url.path not in {"", "/"} or url.query or url.fragment
+                or not re.fullmatch(r"[a-z0-9-]+(?:\.[a-z0-9-]+)*\.cnt-prod\.loadtesting\.azure\.com",
+                                    url.hostname)):
+            raise ValueError("Unexpected endpoint.")
+    except ValueError as exc:
+        raise ValueError("Use the Azure public-cloud Load Testing endpoint returned by resource discovery, "
+                         "without a custom port, path, query or credentials.") from exc
+    return f"https://{url.hostname}"
+
+
+def insights_view(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict) or "error" in payload:
+        raise ValueError("The insights API did not return a TestRunInsights object. Inspect the response JSON.")
+    status = payload.get("status", "Unknown")
+    if not isinstance(status, str) or not status:
+        raise ValueError("The insights response status must be a non-empty string.")
+    version = payload.get("version")
+    if version is not None and (isinstance(version, bool) or not isinstance(version, int)):
+        raise ValueError("The insights response version must be an integer.")
+    columns = payload.get("columns", [])
+    if not isinstance(columns, list) or any(
+        not isinstance(column, dict) or not isinstance(column.get("name"), str) or not column["name"]
+        or not isinstance(column.get("dataType"), str) for column in columns
+    ):
+        raise ValueError("The insights response columns must contain name/dataType definitions.")
+    names = list(dict.fromkeys(column["name"] for column in columns))
+    rows = payload.get("rows", {})
+    if not isinstance(rows, dict):
+        raise ValueError("The insights response rows must be keyed objects for API version "
+                         f"{INSIGHTS_API_VERSION}. Inspect the response JSON.")
+    normalized = []
+    for id_, values in rows.items():
+        if not isinstance(values, dict) or any(not isinstance(value, str) for value in values.values()):
+            raise ValueError("Each insight row must map column names to string values.")
+        normalized.append({"id": id_, "values": values})
+        for name in values:
+            if name not in names:
+                names.append(name)
+    return {"status": status, "version": version, "columns": names, "rows": normalized}
+
+
 def build_commands(action_id: str, config: Config, artifact_dir: Path) -> list[Command]:
     if action_id not in ACTION_BY_ID:
         raise ValueError("Unknown demo action. Arbitrary commands are not supported.")
@@ -353,6 +417,19 @@ def build_commands(action_id: str, config: Config, artifact_dir: Path) -> list[C
         return [command(args, "server-metrics.json", config.serverMetric, config.serverNamespace)]
 
     scope = config.load_scope()
+
+    if action_id == "resolve-load-endpoint":
+        return [command(["resource", "show", "--subscription", config.subscription,
+                         "--ids", config.load_resource_id(),
+                         "--query", "{id:id,dataPlaneURI:properties.dataPlaneURI}"], "load-resource.json")]
+    if action_id == "ai-insights":
+        config.test_scope()
+        return [
+            *build_commands("show-run", config, artifact_dir),
+            command(["rest", "--method", "get", "--url", config.insights_url(),
+                     "--resource", LOAD_TEST_AUDIENCE, "--subscription", config.subscription],
+                    "ai-insights.json"),
+        ]
 
     def load(args: list[str], artifact: str = "", metric: str = "",
              namespace: str = "", download: bool = False) -> Command:

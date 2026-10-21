@@ -14,6 +14,7 @@ let lastEvidenceJob = null;
 let resources = [];
 let runs = [];
 let serverDefinitions = [];
+let insightsApiVersion = "";
 
 function notify(message, error = false) {
   const element = $(error ? "error" : "notice");
@@ -59,6 +60,13 @@ function fillInputs() {
     : "Inspect this resource to resolve its name/type before attaching it to the test.";
   const tenant = config.tenant && /^[A-Za-z0-9.-]+$/.test(config.tenant) ? ` --tenant ${config.tenant}` : "";
   $("login-instructions").textContent = `az login${tenant}\naz extension add --name load`;
+  $("insights-endpoint").textContent = config.loadTestEndpoint || "Not resolved for the selected resource.";
+  $("insights-api-version").textContent = insightsApiVersion;
+}
+
+function clearLoadEndpoint() {
+  config.loadTestEndpoint = "";
+  $("insights-endpoint").textContent = "Not resolved for the selected resource.";
 }
 
 function updateExecute() {
@@ -75,6 +83,7 @@ function invalidate() {
   $("run-summary").hidden = true;
   $("metric-panel").hidden = true;
   $("client-overview").hidden = true;
+  $("insights-result").hidden = true;
   updateExecute();
 }
 
@@ -289,6 +298,9 @@ function fillFromResult(job) {
       resources = arrayOf(data);
       options($("resource-picker"), resources, "Select an existing resource", (item) => `${item.name} (${item.resourceGroup})`);
       notify(`Found ${resources.length} Load Testing resources. Choose one on the left.`);
+    } else if (entry.artifact === "load-resource.json" && job.state === "succeeded" && entry.loadEndpoint) {
+      config.loadTestEndpoint = entry.loadEndpoint;
+      notify("Load Testing endpoint verified for the selected resource. Preview Get latest AI insights next.");
     } else if (entry.artifact === "runs.json") {
       runs = arrayOf(data);
       options($("run-picker"), runs, "Select an execution", (item) => `${item.testRunId} | ${item.status}`);
@@ -342,6 +354,79 @@ function renderRun(run, verdict) {
     panel.append(wrapper);
   }
   panel.hidden = false;
+}
+
+function prepareInsights(snapshot) {
+  $("insights-result").hidden = false;
+  $("insights-status").textContent = "LOADING";
+  $("insights-status").className = "pill";
+  $("insights-scope").textContent = `${snapshot.loadTestResource} | Test: ${snapshot.testId} | Run: ${snapshot.runId}`;
+  $("insights-state").textContent = "Reading existing insights from Azure. No generation or load traffic is started.";
+  $("insights-version").textContent = "";
+  $("insights-cards").replaceChildren();
+  $("insights-json").replaceChildren();
+  $("insights-raw").hidden = true;
+  $("insights-raw").open = false;
+  $("insights-downloads").replaceChildren();
+}
+
+function renderInsights(job, snapshot) {
+  prepareInsights(snapshot);
+  const entry = job.commands.find((item) => item.artifact === "ai-insights.json");
+  if (entry?.format === "json" && Object.hasOwn(entry, "data")) {
+    $("insights-json").append(jsonPreview(entry.data));
+    $("insights-raw").hidden = false;
+  }
+  filesFor(job, $("insights-downloads"));
+  if (job.state !== "succeeded" || !entry?.insights) {
+    $("insights-status").textContent = "UNAVAILABLE";
+    $("insights-status").className = "pill bad";
+    $("insights-state").textContent = job.error || "A validated insights response was not returned. Inspect the raw CLI output for authorization, availability or not-found errors.";
+    return;
+  }
+  const view = entry.insights;
+  $("insights-status").textContent = `GENERATION: ${view.status.toUpperCase()}`;
+  $("insights-status").className = `pill ${view.status === "Succeeded" ? "good"
+    : ["Failed", "Canceled"].includes(view.status) ? "bad" : "warning"}`;
+  const descriptions = {
+    NotStarted: "Azure has not started insight generation. Generate insights explicitly in the Azure portal, then fetch again.",
+    Running: "Azure is generating insights. Fetch again after processing completes. Any returned content is preliminary.",
+    Succeeded: view.rows.length ? "Azure completed insight generation. Review this AI-generated content against the run's telemetry."
+      : "Azure completed insight generation but returned no insight rows. This is not evidence that the run has no issues.",
+    Failed: "Azure reported failed insight generation. Returned content is not completed analysis; inspect the JSON and Azure portal.",
+    Canceled: "Azure reported canceled insight generation. Returned content is not completed analysis.",
+  };
+  $("insights-state").textContent = Object.hasOwn(descriptions, view.status) ? descriptions[view.status]
+    : "Azure did not report a recognized generation state. Inspect the response JSON before treating the content as completed analysis.";
+  $("insights-version").textContent = `API: ${insightsApiVersion} | Insights revision: ${view.version ?? "not returned"} | ${view.rows.length} returned rows`;
+  const summaries = view.rows.filter((row) => Object.keys(row.values).length === 1 && Object.hasOwn(row.values, "Summary"));
+  const others = view.rows.filter((row) => !summaries.includes(row));
+  for (const row of [...summaries, ...others]) {
+    const card = document.createElement("article");
+    card.className = `insight-card${summaries.includes(row) ? " summary-card" : ""}`;
+    const heading = document.createElement("h3");
+    heading.textContent = row.values.Title || (summaries.includes(row) ? "Run summary" : `Insight ${row.id}`);
+    const provenance = document.createElement("p");
+    provenance.className = "hint";
+    provenance.textContent = `Azure insights row ${row.id}`;
+    const fields = document.createElement("dl");
+    for (const name of view.columns) {
+      if (!Object.hasOwn(row.values, name) || (name === "Title" && row.values.Title)) continue;
+      const label = document.createElement("dt");
+      label.textContent = name.replace(/([a-z])([A-Z])/g, "$1 $2");
+      const content = document.createElement("dd");
+      content.textContent = row.values[name] === "" ? "(empty value)" : row.values[name];
+      fields.append(label, content);
+    }
+    card.append(heading, provenance, fields);
+    if (!fields.childElementCount) {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = "No additional fields were returned for this row.";
+      card.append(empty);
+    }
+    $("insights-cards").append(card);
+  }
 }
 
 function renderMetrics(rows, job = null, artifact = "") {
@@ -614,6 +699,8 @@ async function executePlan(duringWatch = false) {
   if (selected.action === "all-client-metrics") {
     prepareClientOverview(JSON.parse(scope));
     $("metric-panel").hidden = true;
+  } else if (selected.action === "ai-insights") {
+    prepareInsights(JSON.parse(scope));
   }
   try {
     const started = await api("/api/jobs", { planId: selected.id, confirmed: $("confirmation").checked });
@@ -625,10 +712,17 @@ async function executePlan(duringWatch = false) {
     } while (["queued", "running"].includes(job.state));
     if (job.action === "collect-evidence") lastEvidenceJob = { job, key: selectedRun };
     if (JSON.stringify(config) === scope) {
-      if (job.action !== "all-client-metrics" || job.state === "succeeded") fillFromResult(job);
+      if (job.action === "resolve-load-endpoint" && job.state !== "succeeded") {
+        clearLoadEndpoint();
+        save();
+      }
+      if (!["all-client-metrics", "ai-insights"].includes(job.action) || job.state === "succeeded") fillFromResult(job);
       if (job.action === "all-client-metrics") {
         renderClientOverview(job, JSON.parse(scope));
         if (!$("tab-metrics").hidden) $("client-overview").scrollIntoView({ behavior: "smooth", block: "start" });
+      } else if (job.action === "ai-insights") {
+        renderInsights(job, JSON.parse(scope));
+        if (!$("tab-insights").hidden) $("insights-result").scrollIntoView({ behavior: "smooth", block: "start" });
       } else job.commands.forEach((entry) => {
         if (entry.metricRows) renderMetrics(entry.metricRows, job, entry.artifact);
       });
@@ -673,6 +767,7 @@ async function bootstrap() {
   const data = await api("/api/bootstrap");
   token = data.token;
   defaults = data.defaults;
+  insightsApiVersion = data.insightsApiVersion;
   config = { ...defaults };
   try {
     const stored = JSON.parse(localStorage.getItem(storageKey) || "{}");
@@ -680,6 +775,7 @@ async function bootstrap() {
     for (const key of Object.keys(defaults)) {
       if (typeof stored[key] === "string") config[key] = stored[key];
     }
+    config.loadTestEndpoint = "";
   } catch (error) {
     notify(`Saved browser configuration could not be loaded: ${error.message}`, true);
   }
@@ -716,6 +812,7 @@ async function bootstrap() {
     input.addEventListener("input", () => {
       stopWatching();
       config[input.dataset.config] = input.value.trim();
+      if (["subscription", "resourceGroup", "loadTestResource"].includes(input.dataset.config)) clearLoadEndpoint();
       if (input.dataset.config === "tenant") {
         const tenant = config.tenant && /^[A-Za-z0-9.-]+$/.test(config.tenant) ? ` --tenant ${config.tenant}` : "";
         $("login-instructions").textContent = `az login${tenant}\naz extension add --name load`;
@@ -747,6 +844,7 @@ async function bootstrap() {
     stopWatching();
     config.resourceGroup = item.resourceGroup;
     config.loadTestResource = item.name;
+    clearLoadEndpoint();
     config.startTime = ""; config.endTime = "";
     runs = [];
     options($("run-picker"), [], "List runs for this resource", () => "");

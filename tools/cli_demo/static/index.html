@@ -13,6 +13,10 @@
     <div><h1>Azure Load Testing <span>CLI lab</span></h1><p>Real commands. Existing resources. No portal required.</p></div>
     <span class="local-badge">LOCALHOST ONLY</span>
   </header>
+  <aside id="demo-disclaimer" class="demo-disclaimer" role="note" aria-label="Demo application disclaimer">
+    <strong>Independent demonstration application</strong>
+    <p>This application is independently developed for demonstration and educational purposes only. It is not an official Microsoft Azure offering and is not provided or supported by Microsoft. It is not intended for production use.</p>
+  </aside>
   <div id="error" class="notice error" role="alert" hidden></div>
   <div id="notice" class="notice" role="status" hidden></div>
   <main class="layout">
@@ -58,7 +62,8 @@ az extension add --name load</pre>
         <button class="tab active" data-tab="lifecycle" aria-selected="true">1. Create &amp; run</button>
         <button class="tab" data-tab="metrics" aria-selected="false">2. Client &amp; engine</button>
         <button class="tab" data-tab="server" aria-selected="false">3. Server metrics</button>
-        <button class="tab" data-tab="downloads" aria-selected="false">4. Downloads &amp; skills</button>
+        <button class="tab" data-tab="insights" aria-selected="false">4. AI insights</button>
+        <button class="tab" data-tab="downloads" aria-selected="false">5. Downloads &amp; skills</button>
       </nav>
 
       <section id="tab-lifecycle" class="stage">
@@ -111,6 +116,27 @@ az extension add --name load</pre>
         </div>
         <p class="hint">Attach components and metric definitions <strong>before starting a run</strong> for repeatable Load Testing configuration. Azure Monitor reads also work directly on a resource without attaching it. Old metric values may have expired.</p>
         <div id="actions-server" class="action-grid"></div>
+      </section>
+
+      <section id="tab-insights" class="stage" hidden>
+        <div class="stage-heading"><p class="eyebrow">AI-ASSISTED ANALYSIS | PREVIEW</p><h2>Understand the selected run's AI insights.</h2>
+          <p>Read Azure Load Testing's existing summary, evidence and recommendations for a completed run. This demo does not generate its own AI analysis or automatically generate insights in Azure.</p></div>
+        <p class="hint">Select the resource, test and run on the left. First preview and execute <strong>Resolve Load Testing endpoint</strong>, then <strong>Get latest AI insights</strong>. Both operations are read-only.</p>
+        <p class="status-line">Verified data-plane endpoint: <code id="insights-endpoint">Not resolved for the selected resource.</code></p>
+        <p class="hint"><code>GET /test-runs/{testRunId}/insights/latest</code> | API version <code id="insights-api-version"></code></p>
+        <div id="actions-insights" class="action-grid"></div>
+        <p class="hint">Insights are generated on demand in Azure. If none exist, use <strong>AI summary and insights &gt; Generate insights</strong> in the Azure portal, then fetch again here. Availability depends on the service, permissions and run data; server-side metrics improve the analysis. Failed requests remain visible in the CLI output.</p>
+        <p class="hint"><strong>AI-generated content can be inaccurate.</strong> Review supporting telemetry before acting on recommendations. Insight generation status is not the load test's pass/fail verdict.</p>
+        <p class="hint"><a href="https://learn.microsoft.com/azure/app-testing/load-testing/how-to-analyze-test-results-using-actionable-insights" target="_blank" rel="noreferrer">About actionable insights (Microsoft Learn)</a></p>
+        <section id="insights-result" class="panel result-panel" aria-live="polite" hidden>
+          <div class="section-heading"><h2>AI insights</h2><span id="insights-status" class="pill"></span></div>
+          <p id="insights-scope" class="hint"></p>
+          <p id="insights-state" role="status"></p>
+          <p id="insights-version" class="hint"></p>
+          <div id="insights-cards" class="insights-cards"></div>
+          <details id="insights-raw" hidden><summary>View response JSON</summary><div id="insights-json"></div></details>
+          <div id="insights-downloads"></div>
+        </section>
       </section>
 
       <section id="tab-downloads" class="stage" hidden>
