@@ -1,0 +1,39 @@
+version: v0.1
+testId: contoso-bank-retail-jmx-migrated
+displayName: Contoso Bank - Retail JMX Migration
+description: Literal retail JMX profile with guarded transfer correlation.
+testType: Locust
+testPlan: retail_locustfile.py
+engineInstances: 4
+configurationFiles:
+  - jmeter_runtime.py
+  - ..\data\accounts.csv
+splitAllCSVs: true
+properties:
+  userPropertyFile: retail.azure.conf
+env:
+  - name: BASE_URL
+    value: app-loadtest-27d2e5.azurewebsites.net
+  - name: LOCUST_HOST
+    value: https://app-loadtest-27d2e5.azurewebsites.net
+  - name: LOCUST_USERS
+    value: "200"
+  - name: LOCUST_SPAWN_RATE
+    value: "3.3333333333333335"
+  - name: LOCUST_RUN_TIME
+    value: "300"
+  - name: PAGE_SIZE
+    value: "20"
+  - name: THINK_TIME_MS
+    value: "500"
+failureCriteria:
+  clientMetrics:
+    - avg(response_time_ms) > 300
+    - percentage(error) > 5
+    - GetBalance: p95(response_time_ms) > 500
+    - GetTransactions: p95(response_time_ms) > 1000
+    - CreateTransfer: p95(response_time_ms) > 1200
+    - GenerateStatement: p95(response_time_ms) > 3000
+autoStop:
+  errorPercentage: 90
+  timeWindow: 60

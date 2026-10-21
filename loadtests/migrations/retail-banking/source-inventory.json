@@ -1,0 +1,563 @@
+{
+  "schemaVersion": 1,
+  "source": "loadtests\\jmeter\\contoso-bank.jmx",
+  "sha256": "296925ed00e4aad297844f31a3fd1175301c6c5b2471b03e030b543771fd52a9",
+  "elements": [
+    {
+      "type": "TestPlan",
+      "name": "Contoso Bank - Retail Banking Journey",
+      "scope": [],
+      "propertyNames": [
+        "Argument.desc",
+        "Argument.metadata",
+        "Argument.name",
+        "Argument.value",
+        "TestPlan.comments",
+        "TestPlan.functional_mode",
+        "TestPlan.serialize_threadgroups",
+        "TestPlan.tearDown_on_shutdown"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "ConfigTestElement",
+      "name": "HTTP Request Defaults",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey"
+      ],
+      "propertyNames": [
+        "HTTPSampler.concurrentPool",
+        "HTTPSampler.connect_timeout",
+        "HTTPSampler.domain",
+        "HTTPSampler.protocol",
+        "HTTPSampler.response_timeout"
+      ],
+      "variableReferences": [
+        "udv_baseUrl"
+      ]
+    },
+    {
+      "type": "HeaderManager",
+      "name": "HTTP Header Manager",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey"
+      ],
+      "propertyNames": [
+        "Header.name",
+        "Header.value"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "CookieManager",
+      "name": "HTTP Cookie Manager",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey"
+      ],
+      "propertyNames": [
+        "CookieManager.clearEachIteration"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "CSVDataSet",
+      "name": "Accounts CSV",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey"
+      ],
+      "propertyNames": [
+        "delimiter",
+        "fileEncoding",
+        "filename",
+        "ignoreFirstLine",
+        "quotedData",
+        "recycle",
+        "shareMode",
+        "stopThread",
+        "variableNames"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "ThreadGroup",
+      "name": "Retail Banking Customers",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey"
+      ],
+      "propertyNames": [
+        "LoopController.continue_forever",
+        "LoopController.loops",
+        "ThreadGroup.delay",
+        "ThreadGroup.duration",
+        "ThreadGroup.num_threads",
+        "ThreadGroup.on_sample_error",
+        "ThreadGroup.ramp_time",
+        "ThreadGroup.same_user_on_next_iteration",
+        "ThreadGroup.scheduler"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "ThroughputController",
+      "name": "Journey - Balance Enquiry (60%)",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers"
+      ],
+      "propertyNames": [
+        "ThroughputController.perThread",
+        "ThroughputController.style"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "HTTPSamplerProxy",
+      "name": "GetBalance",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers",
+        "Journey - Balance Enquiry (60%)"
+      ],
+      "propertyNames": [
+        "HTTPSampler.follow_redirects",
+        "HTTPSampler.method",
+        "HTTPSampler.path",
+        "HTTPSampler.use_keepalive"
+      ],
+      "variableReferences": [
+        "accountId"
+      ]
+    },
+    {
+      "type": "ResponseAssertion",
+      "name": "Assert 200",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers",
+        "Journey - Balance Enquiry (60%)",
+        "GetBalance"
+      ],
+      "propertyNames": [
+        "49586",
+        "Assertion.assume_success",
+        "Assertion.custom_message",
+        "Assertion.test_field",
+        "Assertion.test_type"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "ThroughputController",
+      "name": "Journey - Transaction History (20%)",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers"
+      ],
+      "propertyNames": [
+        "ThroughputController.perThread",
+        "ThroughputController.style"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "HTTPSamplerProxy",
+      "name": "GetTransactions",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers",
+        "Journey - Transaction History (20%)"
+      ],
+      "propertyNames": [
+        "Argument.metadata",
+        "Argument.name",
+        "Argument.value",
+        "HTTPArgument.always_encode",
+        "HTTPArgument.use_equals",
+        "HTTPSampler.follow_redirects",
+        "HTTPSampler.method",
+        "HTTPSampler.path",
+        "HTTPSampler.use_keepalive"
+      ],
+      "variableReferences": [
+        "accountId"
+      ]
+    },
+    {
+      "type": "ResponseAssertion",
+      "name": "Assert 200",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers",
+        "Journey - Transaction History (20%)",
+        "GetTransactions"
+      ],
+      "propertyNames": [
+        "49586",
+        "Assertion.assume_success",
+        "Assertion.custom_message",
+        "Assertion.test_field",
+        "Assertion.test_type"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "ThroughputController",
+      "name": "Journey - Payment Transfer (15%)",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers"
+      ],
+      "propertyNames": [
+        "ThroughputController.perThread",
+        "ThroughputController.style"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "HTTPSamplerProxy",
+      "name": "CreateTransfer",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers",
+        "Journey - Payment Transfer (15%)"
+      ],
+      "propertyNames": [
+        "Argument.metadata",
+        "Argument.value",
+        "HTTPArgument.always_encode",
+        "HTTPSampler.follow_redirects",
+        "HTTPSampler.method",
+        "HTTPSampler.path",
+        "HTTPSampler.postBodyRaw",
+        "HTTPSampler.use_keepalive"
+      ],
+      "variableReferences": [
+        "accountId"
+      ]
+    },
+    {
+      "type": "ResponseAssertion",
+      "name": "Assert 201",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers",
+        "Journey - Payment Transfer (15%)",
+        "CreateTransfer"
+      ],
+      "propertyNames": [
+        "49587",
+        "Assertion.assume_success",
+        "Assertion.custom_message",
+        "Assertion.test_field",
+        "Assertion.test_type"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "JSONPostProcessor",
+      "name": "Extract transferId",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers",
+        "Journey - Payment Transfer (15%)",
+        "CreateTransfer"
+      ],
+      "propertyNames": [
+        "JSONPostProcessor.defaultValues",
+        "JSONPostProcessor.jsonPathExprs",
+        "JSONPostProcessor.match_numbers",
+        "JSONPostProcessor.referenceNames"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "HTTPSamplerProxy",
+      "name": "GetTransferStatus",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers",
+        "Journey - Payment Transfer (15%)"
+      ],
+      "propertyNames": [
+        "HTTPSampler.follow_redirects",
+        "HTTPSampler.method",
+        "HTTPSampler.path",
+        "HTTPSampler.use_keepalive"
+      ],
+      "variableReferences": [
+        "transferId"
+      ]
+    },
+    {
+      "type": "ThroughputController",
+      "name": "Journey - Statement Generation (5%)",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers"
+      ],
+      "propertyNames": [
+        "ThroughputController.perThread",
+        "ThroughputController.style"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "HTTPSamplerProxy",
+      "name": "GenerateStatement",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers",
+        "Journey - Statement Generation (5%)"
+      ],
+      "propertyNames": [
+        "HTTPSampler.follow_redirects",
+        "HTTPSampler.method",
+        "HTTPSampler.path",
+        "HTTPSampler.use_keepalive"
+      ],
+      "variableReferences": [
+        "accountId"
+      ]
+    },
+    {
+      "type": "ResponseAssertion",
+      "name": "Assert 200",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers",
+        "Journey - Statement Generation (5%)",
+        "GenerateStatement"
+      ],
+      "propertyNames": [
+        "49586",
+        "Assertion.assume_success",
+        "Assertion.custom_message",
+        "Assertion.test_field",
+        "Assertion.test_type"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "UniformRandomTimer",
+      "name": "Customer Think Time",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers"
+      ],
+      "propertyNames": [
+        "ConstantTimer.delay",
+        "RandomTimer.range"
+      ],
+      "variableReferences": []
+    }
+  ],
+  "samplers": [
+    {
+      "name": "GetBalance",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers",
+        "Journey - Balance Enquiry (60%)"
+      ],
+      "method": "GET",
+      "path": "/api/accounts/${accountId}/balance",
+      "usesRawBody": "false",
+      "followRedirects": "true",
+      "connectTimeout": "inherited",
+      "readTimeout": "inherited",
+      "argumentNames": []
+    },
+    {
+      "name": "GetTransactions",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers",
+        "Journey - Transaction History (20%)"
+      ],
+      "method": "GET",
+      "path": "/api/accounts/${accountId}/transactions",
+      "usesRawBody": "false",
+      "followRedirects": "true",
+      "connectTimeout": "inherited",
+      "readTimeout": "inherited",
+      "argumentNames": [
+        "page_size"
+      ]
+    },
+    {
+      "name": "CreateTransfer",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers",
+        "Journey - Payment Transfer (15%)"
+      ],
+      "method": "POST",
+      "path": "/api/transfers",
+      "usesRawBody": "true",
+      "followRedirects": "true",
+      "connectTimeout": "inherited",
+      "readTimeout": "inherited",
+      "argumentNames": []
+    },
+    {
+      "name": "GetTransferStatus",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers",
+        "Journey - Payment Transfer (15%)"
+      ],
+      "method": "GET",
+      "path": "/api/transfers/${transferId}",
+      "usesRawBody": "false",
+      "followRedirects": "true",
+      "connectTimeout": "inherited",
+      "readTimeout": "inherited",
+      "argumentNames": []
+    },
+    {
+      "name": "GenerateStatement",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers",
+        "Journey - Statement Generation (5%)"
+      ],
+      "method": "GET",
+      "path": "/api/statements/${accountId}",
+      "usesRawBody": "false",
+      "followRedirects": "true",
+      "connectTimeout": "inherited",
+      "readTimeout": "inherited",
+      "argumentNames": []
+    }
+  ],
+  "threadGroups": [
+    {
+      "name": "Retail Banking Customers",
+      "type": "ThreadGroup",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey"
+      ],
+      "threads": "${__P(threads,50)}",
+      "rampSeconds": "${__P(rampup,60)}",
+      "durationSeconds": "${__P(duration,300)}",
+      "startDelaySeconds": "0",
+      "scheduler": "true",
+      "loops": "-1",
+      "onSampleError": "continue"
+    }
+  ],
+  "csvDataSets": [
+    {
+      "name": "Accounts CSV",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey"
+      ],
+      "filename": "accounts.csv",
+      "variableNames": "accountId,customerName,sortCode,segment",
+      "delimiter": ",",
+      "quotedData": "false",
+      "ignoreFirstLine": "true",
+      "recycle": "true",
+      "stopThread": "false",
+      "shareMode": "shareMode.all"
+    }
+  ],
+  "reviewRequired": [
+    {
+      "type": "CookieManager",
+      "name": "HTTP Cookie Manager",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey"
+      ],
+      "reason": "Match cookie/session lifetime and clearEachIteration behavior."
+    },
+    {
+      "type": "CSVDataSet",
+      "name": "Accounts CSV",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey"
+      ],
+      "reason": "Preserve sharing, iteration advancement, quoting, recycling and EOF behavior."
+    },
+    {
+      "type": "ThroughputController",
+      "name": "Journey - Balance Enquiry (60%)",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers"
+      ],
+      "reason": "Percentage execution control is not automatically a Locust task weight."
+    },
+    {
+      "type": "ThroughputController",
+      "name": "Journey - Transaction History (20%)",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers"
+      ],
+      "reason": "Percentage execution control is not automatically a Locust task weight."
+    },
+    {
+      "type": "ThroughputController",
+      "name": "Journey - Payment Transfer (15%)",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers"
+      ],
+      "reason": "Percentage execution control is not automatically a Locust task weight."
+    },
+    {
+      "type": "ThroughputController",
+      "name": "Journey - Statement Generation (5%)",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers"
+      ],
+      "reason": "Percentage execution control is not automatically a Locust task weight."
+    },
+    {
+      "type": "UniformRandomTimer",
+      "name": "Customer Think Time",
+      "scope": [
+        "Contoso Bank - Retail Banking Journey",
+        "Retail Banking Customers"
+      ],
+      "reason": "Preserve random timer distribution and scope."
+    },
+    {
+      "type": "function",
+      "name": "__BeanShell",
+      "scope": [],
+      "reason": "Embedded expression/code requires manual translation; it was not executed."
+    }
+  ],
+  "disabledSubtrees": [],
+  "functions": [
+    "__BeanShell",
+    "__P",
+    "__Random",
+    "__counter",
+    "__threadNum"
+  ],
+  "propertyReferences": [
+    "duration",
+    "pageSize",
+    "rampup",
+    "thinkTimeMs",
+    "threads"
+  ],
+  "note": "Inventory only. Headers, bodies and literal credential values are deliberately not exported.",
+  "elementCounts": {
+    "CSVDataSet": 1,
+    "ConfigTestElement": 1,
+    "CookieManager": 1,
+    "HTTPSamplerProxy": 5,
+    "HeaderManager": 1,
+    "JSONPostProcessor": 1,
+    "ResponseAssertion": 4,
+    "TestPlan": 1,
+    "ThreadGroup": 1,
+    "ThroughputController": 4,
+    "UniformRandomTimer": 1
+  }
+}

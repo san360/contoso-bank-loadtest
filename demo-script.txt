@@ -1,0 +1,53 @@
+- Start with Quick refresher on what we covered last time
+- Load test with curl command - Contoso Bank - URL cURL
+- Response variable - Contoso Bank - URL Correlated (response variables)
+- JMX Load Test, Locust (IMP) Contoso Bank - Key Vault Secrets (Locust)
+- Key vault secrets demo, Show secret being fetched in logs (IMP) - Contoso Bank - Key Vault Secrets (Locust)
+- Private VNET (IMP) - Contoso Bank - Private path (VNet injected)
+- Walkthrough of terraform code on how to provision a resource (IMP)
+- YAML based test creation, Show https://learn.microsoft.com/en-us/azure/app-testing/load-testing/reference-test-config-yaml (IMP)
+- Azure CLI Walkthrough (IMP)
+- Gitlab Integration
+- AI Topics (IMP)
+	- Migrate JMETER to Locust Based test scripts
+	- Analysis of logs 
+- Best Practices (IMP)
+	- Do not print secrets in logs
+	- Always have auto stop criteria set to reduce VUH cost
+        - Success/Fail Criteria of load test
+
+At the end (Q&A)
+- DB Test walkthrough
+
+
+
+Use the jmx-to-locust skill to migrate the attached JMX into a behaviorally equivalent, runnable Locust test.
+
+1. Inspect the JMX and all referenced CSV, properties, and configuration files.
+2. Preserve request names and ordering, correlation, assertions, CSV behavior,
+   cookies/sessions, pacing, and thread-group load shape.
+3. Create the output in a new migration directory. Do not modify the original
+   JMX or overwrite the existing Locust demo.
+4. Target local Locust initially. Validate using mocked/local HTTP fixtures;
+   do not send traffic to deployed targets or start cloud load tests.
+5. Report generated files, validation results, behavior parity, and any
+   unsupported constructs or manual migration gaps.
+
+Ask me about unresolved behavior rather than silently approximating it.
+
+Also generate a separate Azure Load Testing Locust YAML configuration,
+preserving applicable failure criteria, networking, and secret references.
+Validate aggregate load across engines, but do not deploy or run the test.
+
+
+rg-loadtest
+alt-loadtest-27d2e5
+https://app-loadtest-27d2e5.azurewebsites.net/health
+
+contoso-bank-private-vnet
+
+
+contoso-bank-private-vnet-demo
+
+
+Use the analyze-load-test-artifacts skill to download and analyze evidence for run "cli-20261020-122431-76ec" in Load Testing resource "alt-loadtest-27d2e5", resource group "rg-loadtest", subscription "1da52b57-468a-4dc6-ba36-1255cc1f6e8e". Save downloads in an ignored local evidence directory. Summarize issues with file/line evidence, distinguish observations from hypotheses, and flag missing data. Do not send raw artifacts to an external service.

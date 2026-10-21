@@ -1,0 +1,272 @@
+{
+  "schemaVersion": 1,
+  "source": "loadtests\\jmeter\\contoso-bank-secrets.jmx",
+  "sha256": "6216a398dc8aebfc290b5be68f34fce46b532be4a89f1aba06ca7f51017451b8",
+  "elements": [
+    {
+      "type": "TestPlan",
+      "name": "Contoso Bank - Key Vault Secrets Demo",
+      "scope": [],
+      "propertyNames": [
+        "Argument.desc",
+        "Argument.metadata",
+        "Argument.name",
+        "Argument.value",
+        "TestPlan.comments",
+        "TestPlan.functional_mode",
+        "TestPlan.serialize_threadgroups",
+        "TestPlan.tearDown_on_shutdown"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "Arguments",
+      "name": "Secret Variables",
+      "scope": [
+        "Contoso Bank - Key Vault Secrets Demo"
+      ],
+      "propertyNames": [
+        "Argument.desc",
+        "Argument.metadata",
+        "Argument.name",
+        "Argument.value"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "ConfigTestElement",
+      "name": "HTTP Request Defaults",
+      "scope": [
+        "Contoso Bank - Key Vault Secrets Demo"
+      ],
+      "propertyNames": [
+        "HTTPSampler.connect_timeout",
+        "HTTPSampler.domain",
+        "HTTPSampler.protocol",
+        "HTTPSampler.response_timeout"
+      ],
+      "variableReferences": [
+        "udv_baseUrl"
+      ]
+    },
+    {
+      "type": "HeaderManager",
+      "name": "HTTP Header Manager",
+      "scope": [
+        "Contoso Bank - Key Vault Secrets Demo"
+      ],
+      "propertyNames": [
+        "Header.name",
+        "Header.value"
+      ],
+      "variableReferences": [
+        "udv_apiKey"
+      ]
+    },
+    {
+      "type": "ThreadGroup",
+      "name": "Secrets Demo Customers",
+      "scope": [
+        "Contoso Bank - Key Vault Secrets Demo"
+      ],
+      "propertyNames": [
+        "LoopController.continue_forever",
+        "LoopController.loops",
+        "ThreadGroup.delay",
+        "ThreadGroup.duration",
+        "ThreadGroup.num_threads",
+        "ThreadGroup.on_sample_error",
+        "ThreadGroup.ramp_time",
+        "ThreadGroup.same_user_on_next_iteration",
+        "ThreadGroup.scheduler"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "OnceOnlyController",
+      "name": "Secret Check",
+      "scope": [
+        "Contoso Bank - Key Vault Secrets Demo",
+        "Secrets Demo Customers"
+      ],
+      "propertyNames": [],
+      "variableReferences": []
+    },
+    {
+      "type": "JSR223Sampler",
+      "name": "SecretResolutionCheck",
+      "scope": [
+        "Contoso Bank - Key Vault Secrets Demo",
+        "Secrets Demo Customers",
+        "Secret Check"
+      ],
+      "propertyNames": [
+        "cacheKey",
+        "filename",
+        "parameters",
+        "script",
+        "scriptLanguage"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "HTTPSamplerProxy",
+      "name": "GetBalanceWithSecretHeader",
+      "scope": [
+        "Contoso Bank - Key Vault Secrets Demo",
+        "Secrets Demo Customers"
+      ],
+      "propertyNames": [
+        "HTTPSampler.follow_redirects",
+        "HTTPSampler.method",
+        "HTTPSampler.path",
+        "HTTPSampler.use_keepalive"
+      ],
+      "variableReferences": [
+        "accountId"
+      ]
+    },
+    {
+      "type": "ResponseAssertion",
+      "name": "Assert Balance 200",
+      "scope": [
+        "Contoso Bank - Key Vault Secrets Demo",
+        "Secrets Demo Customers",
+        "GetBalanceWithSecretHeader"
+      ],
+      "propertyNames": [
+        "49586",
+        "Assertion.assume_success",
+        "Assertion.custom_message",
+        "Assertion.test_field",
+        "Assertion.test_type"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "HTTPSamplerProxy",
+      "name": "HealthCheckWithSecretHeader",
+      "scope": [
+        "Contoso Bank - Key Vault Secrets Demo",
+        "Secrets Demo Customers"
+      ],
+      "propertyNames": [
+        "HTTPSampler.follow_redirects",
+        "HTTPSampler.method",
+        "HTTPSampler.path",
+        "HTTPSampler.use_keepalive"
+      ],
+      "variableReferences": []
+    },
+    {
+      "type": "ResponseAssertion",
+      "name": "Assert Health 200",
+      "scope": [
+        "Contoso Bank - Key Vault Secrets Demo",
+        "Secrets Demo Customers",
+        "HealthCheckWithSecretHeader"
+      ],
+      "propertyNames": [
+        "49586",
+        "Assertion.assume_success",
+        "Assertion.custom_message",
+        "Assertion.test_field",
+        "Assertion.test_type"
+      ],
+      "variableReferences": []
+    }
+  ],
+  "samplers": [
+    {
+      "name": "GetBalanceWithSecretHeader",
+      "scope": [
+        "Contoso Bank - Key Vault Secrets Demo",
+        "Secrets Demo Customers"
+      ],
+      "method": "GET",
+      "path": "/api/accounts/${accountId}/balance",
+      "usesRawBody": "false",
+      "followRedirects": "true",
+      "connectTimeout": "inherited",
+      "readTimeout": "inherited",
+      "argumentNames": []
+    },
+    {
+      "name": "HealthCheckWithSecretHeader",
+      "scope": [
+        "Contoso Bank - Key Vault Secrets Demo",
+        "Secrets Demo Customers"
+      ],
+      "method": "GET",
+      "path": "/health",
+      "usesRawBody": "false",
+      "followRedirects": "true",
+      "connectTimeout": "inherited",
+      "readTimeout": "inherited",
+      "argumentNames": []
+    }
+  ],
+  "threadGroups": [
+    {
+      "name": "Secrets Demo Customers",
+      "type": "ThreadGroup",
+      "scope": [
+        "Contoso Bank - Key Vault Secrets Demo"
+      ],
+      "threads": "${__groovy(System.getenv('threads') ?: props.getProperty('threads') ?: '5')}",
+      "rampSeconds": "${__groovy(System.getenv('rampup') ?: props.getProperty('rampup') ?: '15')}",
+      "durationSeconds": "${__groovy(System.getenv('duration') ?: props.getProperty('duration') ?: '60')}",
+      "startDelaySeconds": "0",
+      "scheduler": "true",
+      "loops": "-1",
+      "onSampleError": "continue"
+    }
+  ],
+  "csvDataSets": [],
+  "reviewRequired": [
+    {
+      "type": "JSR223Sampler",
+      "name": "SecretResolutionCheck",
+      "scope": [
+        "Contoso Bank - Key Vault Secrets Demo",
+        "Secrets Demo Customers",
+        "Secret Check"
+      ],
+      "reason": "Custom script requires manual translation; do not execute during inspection."
+    },
+    {
+      "type": "function",
+      "name": "__BeanShell",
+      "scope": [],
+      "reason": "Embedded expression/code requires manual translation; it was not executed."
+    },
+    {
+      "type": "function",
+      "name": "__groovy",
+      "scope": [],
+      "reason": "Embedded expression/code requires manual translation; it was not executed."
+    }
+  ],
+  "disabledSubtrees": [],
+  "functions": [
+    "__BeanShell",
+    "__GetSecret",
+    "__P",
+    "__groovy"
+  ],
+  "propertyReferences": [
+    "accountId"
+  ],
+  "note": "Inventory only. Headers, bodies and literal credential values are deliberately not exported.",
+  "elementCounts": {
+    "Arguments": 1,
+    "ConfigTestElement": 1,
+    "HTTPSamplerProxy": 2,
+    "HeaderManager": 1,
+    "JSR223Sampler": 1,
+    "OnceOnlyController": 1,
+    "ResponseAssertion": 2,
+    "TestPlan": 1,
+    "ThreadGroup": 1
+  }
+}
